@@ -430,6 +430,35 @@ impl App {
     }
 
     fn select_denoiser(&mut self, onnx: bool) {
+        // Choosing the high-quality model means accepting someone else's
+        // licence, so ask every time it's deliberately selected. Declining
+        // leaves the built-in backend running rather than nothing.
+        if onnx {
+            if !crate::firstrun::model_licence() {
+                info!("model licence declined; staying on RNNoise");
+                if let Some(items) = &self.items {
+                    for d in &items.denoisers {
+                        d.item.set_checked(!d.onnx);
+                    }
+                }
+                return;
+            }
+            let available = self.cfg.read().unwrap().available_model();
+            if available.is_none() {
+                // Nothing to load yet — say where to put it and stay put.
+                let expected = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.join("model.onnx")))
+                    .unwrap_or_else(|| std::path::PathBuf::from("model.onnx"));
+                crate::firstrun::model_missing(&expected);
+                if let Some(items) = &self.items {
+                    for d in &items.denoisers {
+                        d.item.set_checked(!d.onnx);
+                    }
+                }
+                return;
+            }
+        }
         {
             let mut c = self.cfg.write().unwrap();
             // Remember the model path either way, so flipping back to ONNX

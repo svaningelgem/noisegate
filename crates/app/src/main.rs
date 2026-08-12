@@ -23,6 +23,8 @@ mod banner;
 mod config;
 #[cfg(windows)]
 mod console;
+#[cfg(windows)]
+mod firstrun;
 mod log_format;
 mod offline;
 mod pipeline;
@@ -126,6 +128,17 @@ pub fn message_box_yes_no(text: &str) -> bool {
             MB_YESNO | MB_ICONWARNING,
         ) == IDYES
     }
+}
+
+/// Hand a URL to Explorer, which opens it in the default browser. Absolute
+/// path, never resolved through PATH.
+#[cfg(windows)]
+pub fn open_url(url: &str) {
+    let explorer = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+        .join("explorer.exe");
+    let _ = std::process::Command::new(explorer).arg(url).spawn();
 }
 
 #[cfg(windows)]
@@ -234,10 +247,29 @@ fn real_main(has_console: bool) -> Result<()> {
             info!(denoiser = p.denoiser_name(), "audio pipeline running");
             (Some(p), None)
         }
+        // The one failure with a scripted way out, handled before the tray
+        // exists because both answers end the run.
+        Err(e) if is_missing_cable(&e) => {
+            tracing::error!("no virtual audio cable installed");
+            match firstrun::cable_missing() {
+                firstrun::CableChoice::OpenSite => open_url(firstrun::CABLE_URL),
+                firstrun::CableChoice::Close => {
+                    // Otherwise this dialog greets them on every single boot,
+                    // a loop they could only escape via the registry.
+                    if autostart::is_enabled() {
+                        info!("turning off start-with-Windows so this doesn't repeat");
+                        if let Err(e) = autostart::set(false) {
+                            tracing::warn!(error = %e, "could not turn off start-with-Windows");
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         Err(e) => {
             tracing::error!(error = ?e, "audio pipeline did not start");
             let problem = StartupProblem {
-                missing_cable: is_missing_cable(&e),
+                missing_cable: false,
                 message: format!("NoiseGate is running, but audio isn't:\n\n{e:#}"),
             };
             (None, Some(problem))
