@@ -216,8 +216,19 @@ fn real_main(has_console: bool) -> Result<()> {
 
     // Single-instance lock via a named mutex. Prevents two trays from
     // fighting over the same audio devices.
-    let _lock =
-        single_instance::acquire().context("another NoiseGate instance is already running")?;
+    //
+    // Launching an already-running tray app is not an error — it's what
+    // happens when someone double-clicks the shortcut, or when autostart
+    // races a manual launch. The existing instance is already doing the job,
+    // so this one bows out without a word. Only a *failure* to determine
+    // whether we're alone is worth reporting.
+    let _lock = match single_instance::acquire() {
+        Ok(lock) => lock,
+        Err(single_instance::AlreadyRunning) => {
+            info!("another instance is already running; leaving it to it");
+            return Ok(());
+        }
+    };
 
     info!("NoiseGate starting");
 
@@ -429,15 +440,21 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 mod single_instance {
-    use anyhow::{anyhow, Result};
     use windows::core::w;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
     use windows::Win32::System::Threading::CreateMutexW;
+
+    /// Another tray instance holds the lock. Not an error — see `acquire`.
+    #[derive(Debug)]
+    pub struct AlreadyRunning;
 
     pub struct Lock(HANDLE);
 
     impl Drop for Lock {
         fn drop(&mut self) {
+            if self.0.is_invalid() {
+                return; // Never opened; nothing to close.
+            }
             unsafe {
                 let _ = windows::Win32::Foundation::CloseHandle(self.0);
             }
@@ -450,14 +467,23 @@ mod single_instance {
     /// and creating one needs SeCreateGlobalPrivilege, which a standard user
     /// account doesn't have. One tray per login session is what we actually
     /// want anyway.
-    pub fn acquire() -> Result<Lock> {
+    pub fn acquire() -> Result<Lock, AlreadyRunning> {
         unsafe {
-            let h = CreateMutexW(None, true, w!("Local\\NoiseGate.SingleInstance"))
-                .map_err(|e| anyhow!("CreateMutexW: {e}"))?;
+            let h = match CreateMutexW(None, true, w!("Local\\NoiseGate.SingleInstance")) {
+                Ok(h) => h,
+                Err(e) => {
+                    // We can't tell whether we're alone. Starting anyway is
+                    // the lesser evil: refusing to run because a bookkeeping
+                    // mutex failed would be a worse outcome than two trays
+                    // briefly coexisting.
+                    tracing::warn!(error = %e, "single-instance check unavailable; starting anyway");
+                    return Ok(Lock(HANDLE::default()));
+                }
+            };
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 // We own this handle even when the mutex already existed.
                 let _ = windows::Win32::Foundation::CloseHandle(h);
-                return Err(anyhow!("already running"));
+                return Err(AlreadyRunning);
             }
             Ok(Lock(h))
         }
