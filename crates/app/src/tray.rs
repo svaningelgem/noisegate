@@ -143,14 +143,34 @@ impl Items {
     }
 }
 
-/// Label for a capture device in the picker. The Windows default entry is
-/// listed first and selected when no explicit device is configured, so the
-/// out-of-the-box behaviour matches what the rest of the system does.
-fn mic_label(name: &str, is_system_default: bool) -> String {
-    if is_system_default {
-        format!("{name}  (system default)")
-    } else {
-        name.to_string()
+/// How a capture device should appear in the picker.
+///
+/// A virtual cable's output side is offered by Windows like any other
+/// microphone, but choosing it would have NoiseGate record from the very
+/// cable it writes to. The pipeline refuses to start in that case; the menu
+/// shouldn't let it get that far. Greyed out with the reason attached beats an
+/// error dialog after the fact.
+fn mic_entry(name: &str, is_system_default: bool, cable: Option<&str>) -> (String, bool) {
+    match cable {
+        Some(product) => (
+            format!("{name}  — {product}'s own output, would loop"),
+            false,
+        ),
+        None if is_system_default => (format!("{name}  (system default)"), true),
+        None => (name.to_string(), true),
+    }
+}
+
+/// The "Windows default" entry, which is the subtle one: following the system
+/// default is fine until the system default *is* a cable, which is precisely
+/// what installing one does. Then the safe-looking option is the trap.
+fn default_entry(current_default: Option<&str>) -> (String, bool) {
+    match current_default {
+        Some(product) => (
+            format!("Windows default  — currently {product}, would loop"),
+            false,
+        ),
+        None => ("Windows default".to_string(), true),
     }
 }
 
@@ -166,7 +186,16 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let mut mics = Vec::new();
 
     let follow_default = cfg.input_device.is_empty();
-    let default_item = CheckMenuItem::new("Windows default", true, follow_default, None);
+    let devices = DeviceList::enumerate();
+
+    // Is the system default itself a cable? Then "Windows default" is a trap.
+    let default_is_cable = devices
+        .as_ref()
+        .ok()
+        .and_then(|l| l.default_capture())
+        .and_then(|d| d.virtual_cable_output());
+    let (label, enabled) = default_entry(default_is_cable);
+    let default_item = CheckMenuItem::new(label, enabled, follow_default, None);
     mic_menu.append(&default_item).ok();
     mics.push(MicEntry {
         item: default_item,
@@ -174,7 +203,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         friendly_name: String::new(),
     });
 
-    match DeviceList::enumerate() {
+    match devices {
         Ok(list) => {
             if !list.capture.is_empty() {
                 mic_menu.append(&PredefinedMenuItem::separator()).ok();
@@ -182,7 +211,9 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
             for d in &list.capture {
                 let checked = !follow_default
                     && audio_io::devices::same_device_name(&d.friendly_name, &cfg.input_device);
-                let item = CheckMenuItem::new(mic_label(&d.friendly_name, d.is_default), true, checked, None);
+                let (label, enabled) =
+                    mic_entry(&d.friendly_name, d.is_default, d.virtual_cable_output());
+                let item = CheckMenuItem::new(label, enabled, checked, None);
                 mic_menu.append(&item).ok();
                 mics.push(MicEntry {
                     item,
@@ -700,9 +731,47 @@ mod tests {
 
     #[test]
     fn system_default_mic_is_marked_in_the_label() {
-        assert_eq!(mic_label("Yeti", false), "Yeti");
-        assert!(mic_label("Yeti", true).starts_with("Yeti"));
-        assert!(mic_label("Yeti", true).contains("system default"));
+        let (label, enabled) = mic_entry("Yeti", false, None);
+        assert_eq!(label, "Yeti");
+        assert!(enabled);
+
+        let (label, enabled) = mic_entry("Yeti", true, None);
+        assert!(label.starts_with("Yeti") && label.contains("system default"));
+        assert!(enabled);
+    }
+
+    /// Selecting a cable's output would have NoiseGate record from the cable
+    /// it writes to. Not selectable, and the menu says why.
+    #[test]
+    fn a_cables_own_output_cannot_be_chosen_as_the_microphone() {
+        let (label, enabled) = mic_entry(
+            "CABLE Output (VB-Audio Virtual Cable)",
+            false,
+            Some("VB-Cable"),
+        );
+        assert!(!enabled, "must be greyed out");
+        assert!(label.contains("loop"), "should say why: {label}");
+        assert!(label.contains("VB-Cable"), "should name the product: {label}");
+    }
+
+    /// The trap that actually bit: installing a cable makes it the system
+    /// default, so "Windows default" silently becomes the looping choice.
+    #[test]
+    fn windows_default_is_disabled_when_the_default_is_a_cable() {
+        let (label, enabled) = default_entry(None);
+        assert_eq!(label, "Windows default");
+        assert!(enabled);
+
+        let (label, enabled) = default_entry(Some("VB-Cable"));
+        assert!(!enabled, "following the default would loop here");
+        assert!(label.contains("VB-Cable") && label.contains("loop"), "{label}");
+    }
+
+    /// A cable being present must not disable ordinary microphones.
+    #[test]
+    fn real_microphones_stay_selectable_alongside_a_cable() {
+        let (_, enabled) = mic_entry("Microphone (fifine Microphone)", true, None);
+        assert!(enabled);
     }
 
     fn count(px: &[u8], colour: [u8; 4]) -> usize {
