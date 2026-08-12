@@ -6,9 +6,7 @@ use std::fmt;
 use std::time::Instant;
 
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::fmt::{
-    format::Writer, FmtContext, FormatEvent, FormatFields,
-};
+use tracing_subscriber::fmt::{format::Writer, FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
 
 const GREEN: &str = "\x1b[32m";
@@ -27,7 +25,9 @@ pub struct GreenFormat {
 
 impl GreenFormat {
     pub fn new() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 }
 

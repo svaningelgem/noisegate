@@ -47,8 +47,12 @@ pub struct Config {
     pub use_onnx: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_atten() -> f32 { 100.0 }
+fn default_true() -> bool {
+    true
+}
+fn default_atten() -> f32 {
+    100.0
+}
 
 impl Default for Config {
     fn default() -> Self {

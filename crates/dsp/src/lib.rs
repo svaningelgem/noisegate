@@ -94,15 +94,15 @@ impl DenoiserHost {
     }
 }
 
-#[cfg(feature = "rnnoise")]
-mod rnnoise;
 #[cfg(feature = "onnx")]
 mod onnx;
-
 #[cfg(feature = "rnnoise")]
-pub use rnnoise::RnNoise;
+mod rnnoise;
+
 #[cfg(feature = "onnx")]
 pub use onnx::OnnxDenoiser;
+#[cfg(feature = "rnnoise")]
+pub use rnnoise::RnNoise;
 
 /// Build a denoiser. With a `model_path` (and an `onnx`-enabled build) that
 /// model is loaded; otherwise we use the built-in RNNoise backend.

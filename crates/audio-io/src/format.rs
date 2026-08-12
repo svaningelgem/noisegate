@@ -47,7 +47,11 @@ impl MixFormat {
         if !self.is_float || self.bits_per_sample != 32 {
             return Err(AudioError::UnsupportedFormat(format!(
                 "device mixes {} {}-bit samples; NoiseGate needs 32-bit IEEE float",
-                if self.is_float { "float" } else { "integer PCM" },
+                if self.is_float {
+                    "float"
+                } else {
+                    "integer PCM"
+                },
                 self.bits_per_sample
             )));
         }
@@ -70,9 +74,7 @@ impl MixFormat {
 /// extensible tail is present, but we check `cbSize` before reading it
 /// anyway rather than take that on faith.
 #[cfg(windows)]
-pub unsafe fn read_mix_format(
-    ptr: *const windows::Win32::Media::Audio::WAVEFORMATEX,
-) -> MixFormat {
+pub unsafe fn read_mix_format(ptr: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> MixFormat {
     use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
     use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
     use windows::Win32::Media::Multimedia::{

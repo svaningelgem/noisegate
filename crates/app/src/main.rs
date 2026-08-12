@@ -83,7 +83,12 @@ fn init_tracing() {
     // File: plain, no colors, default format. Useful for sharing logs.
     if let Some(file) = file {
         registry
-            .with(fmt::layer().with_writer(file).with_ansi(false).with_target(false))
+            .with(
+                fmt::layer()
+                    .with_writer(file)
+                    .with_ansi(false)
+                    .with_target(false),
+            )
             .init();
     } else {
         registry.init();
@@ -117,9 +122,7 @@ fn is_missing_cable(e: &anyhow::Error) -> bool {
 #[cfg(windows)]
 pub fn message_box_yes_no(text: &str) -> bool {
     use windows::core::HSTRING;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO};
     unsafe {
         MessageBoxW(
             None,
@@ -213,8 +216,8 @@ fn real_main(has_console: bool) -> Result<()> {
 
     // Single-instance lock via a named mutex. Prevents two trays from
     // fighting over the same audio devices.
-    let _lock = single_instance::acquire()
-        .context("another NoiseGate instance is already running")?;
+    let _lock =
+        single_instance::acquire().context("another NoiseGate instance is already running")?;
 
     info!("NoiseGate starting");
 
@@ -385,7 +388,9 @@ fn list_devices() -> Result<()> {
 #[cfg(windows)]
 fn log_input_devices() {
     use audio_io::devices::DeviceList;
-    let Ok(list) = DeviceList::enumerate() else { return };
+    let Ok(list) = DeviceList::enumerate() else {
+        return;
+    };
     for d in &list.capture {
         let default = if d.is_default { " (default)" } else { "" };
         info!(name = %d.friendly_name, id = %d.id, "input device available{}", default);
@@ -470,7 +475,8 @@ mod tests {
     use super::*;
 
     fn scratch_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("noisegate-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("noisegate-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir

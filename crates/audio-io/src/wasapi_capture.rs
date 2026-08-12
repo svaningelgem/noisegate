@@ -16,11 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use windows::core::PCWSTR;
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 
 use crate::devices::{Device, DeviceDirection, DeviceList};
 use crate::error::{AudioError, Result};
@@ -71,9 +71,7 @@ impl WasapiCapture {
 
         // Wait for the thread to finish init so callers learn about open/format
         // failures synchronously.
-        ready_rx
-            .recv()
-            .map_err(|_| AudioError::ThreadDied)??;
+        ready_rx.recv().map_err(|_| AudioError::ThreadDied)??;
 
         Ok(Self {
             stop,
@@ -155,9 +153,9 @@ fn capture_loop(
         let init_res = client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            0,                  // hnsBufferDuration
-            0,                  // hnsPeriodicity (must be 0 in shared mode)
-            mix_ptr,            // pass the original pointer through
+            0,       // hnsBufferDuration
+            0,       // hnsPeriodicity (must be 0 in shared mode)
+            mix_ptr, // pass the original pointer through
             None,
         );
         // Always free the format pointer, regardless of success/failure.
@@ -187,7 +185,11 @@ fn capture_loop(
 
         let mut accumulator = FrameAccumulator::new();
         let mut converter = if needs_convert {
-            Some(InlineConverter::new(device_rate, device_channels, SAMPLE_RATE))
+            Some(InlineConverter::new(
+                device_rate,
+                device_channels,
+                SAMPLE_RATE,
+            ))
         } else {
             None
         };
@@ -340,7 +342,9 @@ unsafe fn enumerate_direction(
         .map(|p| p.to_string().unwrap_or_default())
         .unwrap_or_default();
 
-    let count = coll.GetCount().map_err(|e| AudioError::wasapi("GetCount", e))?;
+    let count = coll
+        .GetCount()
+        .map_err(|e| AudioError::wasapi("GetCount", e))?;
     let mut out = Vec::with_capacity(count as usize);
     for i in 0..count {
         let dev = coll.Item(i).map_err(|e| AudioError::wasapi("Item", e))?;
@@ -475,9 +479,14 @@ impl InlineConverter {
         while self.phase < total_src {
             let idx = self.phase as usize;
             let frac = self.phase - idx as f64;
-            let a = if idx == 0 { self.last_sample } else { mono[idx - 1] };
+            let a = if idx == 0 {
+                self.last_sample
+            } else {
+                mono[idx - 1]
+            };
             let b = mono.get(idx).copied().unwrap_or(self.last_sample);
-            self.out.push((a as f64 + (b as f64 - a as f64) * frac) as f32);
+            self.out
+                .push((a as f64 + (b as f64 - a as f64) * frac) as f32);
             self.phase += ratio;
         }
         self.phase -= total_src;
@@ -487,4 +496,3 @@ impl InlineConverter {
         &self.out
     }
 }
-

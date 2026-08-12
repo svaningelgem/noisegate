@@ -42,8 +42,8 @@ fn write_wav(path: &Path, samples: &[f32]) -> Result<()> {
 }
 
 fn read_wav(path: &Path) -> Result<Vec<f32>> {
-    let mut r = hound::WavReader::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let mut r =
+        hound::WavReader::open(path).with_context(|| format!("opening {}", path.display()))?;
     let spec = r.spec();
     if spec.channels != 1 || spec.sample_rate != SAMPLE_RATE {
         bail!(
@@ -128,8 +128,7 @@ pub fn denoise_file(
     attenuation_db: f32,
 ) -> Result<()> {
     let samples = read_wav(input)?;
-    let mut denoiser =
-        dsp::build_denoiser(model, attenuation_db).context("loading denoiser")?;
+    let mut denoiser = dsp::build_denoiser(model, attenuation_db).context("loading denoiser")?;
     info!(denoiser = denoiser.name(), "processing");
 
     let mut out = Vec::with_capacity(samples.len());
@@ -185,7 +184,10 @@ impl LevelProfile {
             .map(|w| db(rms(w)))
             .collect();
         if levels.is_empty() {
-            return Self { floor_db: db(0.0), speech_db: db(0.0) };
+            return Self {
+                floor_db: db(0.0),
+                speech_db: db(0.0),
+            };
         }
         levels.sort_by(f32::total_cmp);
         Self {
@@ -285,8 +287,16 @@ mod tests {
     #[test]
     fn profile_separates_floor_from_speech() {
         let p = LevelProfile::measure(&alternating(0.5, 0.005));
-        assert!((p.floor_db - db(0.005)).abs() < 0.5, "floor was {}", p.floor_db);
-        assert!((p.speech_db - db(0.5)).abs() < 0.5, "speech was {}", p.speech_db);
+        assert!(
+            (p.floor_db - db(0.005)).abs() < 0.5,
+            "floor was {}",
+            p.floor_db
+        );
+        assert!(
+            (p.speech_db - db(0.5)).abs() < 0.5,
+            "speech was {}",
+            p.speech_db
+        );
     }
 
     #[test]
@@ -297,7 +307,11 @@ mod tests {
             *s = 0.0;
         }
         let p = LevelProfile::measure(&v);
-        assert!(p.floor_db > -100.0, "silence leaked into the floor: {}", p.floor_db);
+        assert!(
+            p.floor_db > -100.0,
+            "silence leaked into the floor: {}",
+            p.floor_db
+        );
     }
 
     #[test]

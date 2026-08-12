@@ -63,7 +63,9 @@ fn pin_dylib_path() {
     if std::env::var_os("ORT_DYLIB_PATH").is_some() {
         return; // Explicit operator choice wins.
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf))
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
     {
         std::env::set_var("ORT_DYLIB_PATH", dir.join("onnxruntime.dll"));
     }

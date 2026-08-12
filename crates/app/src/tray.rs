@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tracing::{info, warn};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -157,14 +159,21 @@ fn mic_entry(
     rank: Option<usize>,
 ) -> (String, bool) {
     if let Some(product) = cable {
-        return (format!("{name}  — {product}'s own output, would loop"), false);
+        return (
+            format!("{name}  — {product}'s own output, would loop"),
+            false,
+        );
     }
     // Rank first so the preference order reads down the menu.
     let prefix = match rank {
         Some(i) => format!("{}.  ", i + 1),
         None => "     ".to_string(),
     };
-    let suffix = if is_system_default { "  (system default)" } else { "" };
+    let suffix = if is_system_default {
+        "  (system default)"
+    } else {
+        ""
+    };
     (format!("{prefix}{name}{suffix}"), true)
 }
 
@@ -216,12 +225,17 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
                 mic_menu.append(&PredefinedMenuItem::separator()).ok();
             }
             for d in &list.capture {
-                let rank = cfg.microphones.iter().position(|m| {
-                    audio_io::devices::same_device_name(m, &d.friendly_name)
-                });
+                let rank = cfg
+                    .microphones
+                    .iter()
+                    .position(|m| audio_io::devices::same_device_name(m, &d.friendly_name));
                 let checked = rank == Some(0);
-                let (label, enabled) =
-                    mic_entry(&d.friendly_name, d.is_default, d.virtual_cable_output(), rank);
+                let (label, enabled) = mic_entry(
+                    &d.friendly_name,
+                    d.is_default,
+                    d.virtual_cable_output(),
+                    rank,
+                );
                 let item = CheckMenuItem::new(label, enabled, checked, None);
                 mic_menu.append(&item).ok();
                 mics.push(MicEntry {
@@ -247,7 +261,10 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
 
     let rnnoise = CheckMenuItem::new("RNNoise (built-in)", true, !onnx_active, None);
     dsp_menu.append(&rnnoise).ok();
-    denoisers.push(DenoiserEntry { item: rnnoise, onnx: false });
+    denoisers.push(DenoiserEntry {
+        item: rnnoise,
+        onnx: false,
+    });
 
     match (cfg!(feature = "onnx"), &model) {
         (true, Some(path)) => {
@@ -267,7 +284,11 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         }
         (false, _) => {
             dsp_menu
-                .append(&MenuItem::new("(built without --features onnx)", false, None))
+                .append(&MenuItem::new(
+                    "(built without --features onnx)",
+                    false,
+                    None,
+                ))
                 .ok();
         }
     }
@@ -276,7 +297,12 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
 
     // Ask the registry rather than trusting the config file: the user may have
     // removed the Run entry by hand since we last wrote it.
-    let auto_start = CheckMenuItem::new("Start with Windows", true, crate::autostart::is_enabled(), None);
+    let auto_start = CheckMenuItem::new(
+        "Start with Windows",
+        true,
+        crate::autostart::is_enabled(),
+        None,
+    );
     menu.append(&auto_start).ok();
 
     let open_logs = MenuItem::new("Open log folder", true, None);
@@ -425,7 +451,7 @@ impl App {
         {
             let mut c = self.cfg.write().unwrap();
             if name.is_empty() {
-                c.microphones.clear();      // "Windows default"
+                c.microphones.clear(); // "Windows default"
             } else {
                 c.prefer_microphone(&name);
             }
@@ -778,12 +804,18 @@ mod tests {
         // Unranked entries are padded so their names line up under ranked ones.
         let (label, enabled) = mic_entry("Yeti", false, None, None);
         assert_eq!(label.trim(), "Yeti");
-        assert!(!label.trim_start().starts_with(char::is_numeric), "no rank: {label}");
+        assert!(
+            !label.trim_start().starts_with(char::is_numeric),
+            "no rank: {label}"
+        );
         assert!(enabled);
 
         let (label, enabled) = mic_entry("Yeti", true, None, Some(0));
         assert!(label.contains("Yeti") && label.contains("system default"));
-        assert!(label.trim_start().starts_with("1."), "rank should lead: {label}");
+        assert!(
+            label.trim_start().starts_with("1."),
+            "rank should lead: {label}"
+        );
         assert!(enabled);
     }
 
@@ -799,7 +831,10 @@ mod tests {
         );
         assert!(!enabled, "must be greyed out");
         assert!(label.contains("loop"), "should say why: {label}");
-        assert!(label.contains("VB-Cable"), "should name the product: {label}");
+        assert!(
+            label.contains("VB-Cable"),
+            "should name the product: {label}"
+        );
     }
 
     /// The trap that actually bit: installing a cable makes it the system
@@ -812,7 +847,10 @@ mod tests {
 
         let (label, enabled) = default_entry(Some("VB-Cable"));
         assert!(!enabled, "following the default would loop here");
-        assert!(label.contains("VB-Cable") && label.contains("loop"), "{label}");
+        assert!(
+            label.contains("VB-Cable") && label.contains("loop"),
+            "{label}"
+        );
     }
 
     /// A cable being present must not disable ordinary microphones.
@@ -830,10 +868,7 @@ mod tests {
     fn every_icon_is_the_size_tray_icon_expects() {
         for enabled in [false, true] {
             for warning in [false, true] {
-                assert_eq!(
-                    icon_rgba(enabled, warning).len(),
-                    ICON_SIZE * ICON_SIZE * 4
-                );
+                assert_eq!(icon_rgba(enabled, warning).len(), ICON_SIZE * ICON_SIZE * 4);
             }
         }
     }

@@ -112,10 +112,10 @@ impl Pipeline {
                 #[cfg(windows)]
                 let _mmcss = audio_io::mmcss_pro_audio_for_current_thread();
                 let _ = stats_for_thread; // keep alive via host
-                // An empty ring is not news: this thread polls every 2 ms
-                // while frames arrive every 10 ms, so it finds nothing most
-                // of the time even when everything is healthy. Only a long
-                // gap means anything, and that is what gets reported.
+                                          // An empty ring is not news: this thread polls every 2 ms
+                                          // while frames arrive every 10 ms, so it finds nothing most
+                                          // of the time even when everything is healthy. Only a long
+                                          // gap means anything, and that is what gets reported.
                 let mut last_frame_at = std::time::Instant::now();
                 let mut reported_gap = false;
                 while !shutdown_dsp.load(Ordering::Acquire) {
@@ -172,11 +172,8 @@ impl Pipeline {
             }
         }
 
-        let capture = audio_io::WasapiCapture::start(
-            &input_id,
-            Box::new(Sink { prod: prod_a }),
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let capture = audio_io::WasapiCapture::start(&input_id, Box::new(Sink { prod: prod_a }))
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         // Render source: pulls from ring B.
         struct Source<C: Consumer<Item = Frame> + Send> {
@@ -199,8 +196,7 @@ impl Pipeline {
             &output_id,
             Box::new(Source {
                 cons: cons_b,
-                last_underrun_log: std::time::Instant::now()
-                    - std::time::Duration::from_secs(60),
+                last_underrun_log: std::time::Instant::now() - std::time::Duration::from_secs(60),
             }),
         )
         .map_err(|e| anyhow::anyhow!(e))?;

@@ -110,17 +110,19 @@ mod tests {
     #[test]
     fn known_codes_read_as_english_and_never_dangle() {
         // The exact failure from a re-enumerated USB mic.
-        let e = AudioError::wasapi("IMMDevice::Activate", windows::core::Error::from_hresult(
-            windows::core::HRESULT(0x8889_0004u32 as i32),
-        ));
+        let e = AudioError::wasapi(
+            "IMMDevice::Activate",
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8889_0004u32 as i32)),
+        );
         let text = e.to_string();
         assert!(text.contains("disconnected"), "{text}");
         assert!(!text.contains("0x88890004"), "raw HRESULT leaked: {text}");
 
         // An unmapped code still says something, and never ends in a bare colon.
-        let odd = AudioError::wasapi("GetBuffer", windows::core::Error::from_hresult(
-            windows::core::HRESULT(0x8889_0099u32 as i32),
-        ));
+        let odd = AudioError::wasapi(
+            "GetBuffer",
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8889_0099u32 as i32)),
+        );
         let text = odd.to_string();
         assert!(text.contains("0x88890099"), "{text}");
         assert!(!text.trim_end().ends_with(':'), "dangling colon: {text}");
@@ -129,9 +131,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn privacy_block_explains_where_to_look() {
-        let e = AudioError::wasapi("Activate", windows::core::Error::from_hresult(
-            windows::core::HRESULT(0x8007_0005u32 as i32),
-        ));
+        let e = AudioError::wasapi(
+            "Activate",
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8007_0005u32 as i32)),
+        );
         assert!(e.to_string().contains("Microphone"), "{e}");
     }
 }

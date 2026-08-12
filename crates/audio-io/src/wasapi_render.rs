@@ -53,7 +53,10 @@ impl WasapiRender {
             .map_err(|e| AudioError::Other(anyhow::anyhow!("spawn render thread: {e}")))?;
 
         ready_rx.recv().map_err(|_| AudioError::ThreadDied)??;
-        Ok(Self { stop, thread: Some(thread) })
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -153,11 +156,7 @@ fn render_loop(
         let prefill = render_client
             .GetBuffer(buffer_frames)
             .map_err(|e| AudioError::wasapi("GetBuffer(prefill)", e))?;
-        std::ptr::write_bytes(
-            prefill,
-            0,
-            (buffer_frames * device_block_align) as usize,
-        );
+        std::ptr::write_bytes(prefill, 0, (buffer_frames * device_block_align) as usize);
         render_client
             .ReleaseBuffer(buffer_frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
             .map_err(|e| AudioError::wasapi("ReleaseBuffer(prefill)", e))?;
@@ -231,7 +230,13 @@ struct UpConverter {
 
 impl UpConverter {
     fn new(src_rate: u32, dst_rate: u32, dst_channels: usize) -> Self {
-        Self { src_rate, dst_rate, dst_channels, phase: 0.0, last: 0.0 }
+        Self {
+            src_rate,
+            dst_rate,
+            dst_channels,
+            phase: 0.0,
+            last: 0.0,
+        }
     }
 
     /// Linearly resample mono `src` (48 kHz) into `frames` device-rate
@@ -248,7 +253,11 @@ impl UpConverter {
             let pos = self.phase + f as f64 * ratio;
             let idx = pos as usize;
             let frac = pos - idx as f64;
-            let a = if idx == 0 { self.last } else { src.get(idx - 1).copied().unwrap_or(self.last) };
+            let a = if idx == 0 {
+                self.last
+            } else {
+                src.get(idx - 1).copied().unwrap_or(self.last)
+            };
             let b = src.get(idx).copied().unwrap_or(self.last);
             let s = (a as f64 + (b as f64 - a as f64) * frac) as f32;
             for c in 0..self.dst_channels {

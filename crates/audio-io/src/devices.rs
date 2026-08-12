@@ -71,7 +71,9 @@ fn strip_instance_prefix(name: &str) -> String {
         }
         let trimmed = part.trim_start();
         let stripped = match trimmed.split_once("- ") {
-            Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => tail,
+            Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => {
+                tail
+            }
             _ => trimmed,
         };
         out.push_str(stripped.trim());
@@ -276,7 +278,9 @@ mod tests {
             ],
             render: vec![],
         };
-        let got = list.resolve_capture("Microphone (fifine Microphone)").unwrap();
+        let got = list
+            .resolve_capture("Microphone (fifine Microphone)")
+            .unwrap();
         assert_eq!(got.friendly_name, "Microphone (fifine Microphone)");
     }
 
@@ -418,11 +422,17 @@ mod priority_tests {
 
     #[test]
     fn takes_the_highest_ranked_device_that_is_present() {
-        let l = list(&["Headset (Sennheiser)", "Microphone (fifine)"], "Headset (Sennheiser)");
+        let l = list(
+            &["Headset (Sennheiser)", "Microphone (fifine)"],
+            "Headset (Sennheiser)",
+        );
         let got = l
             .resolve_capture_ranked(&prefs(&["Microphone (fifine)", "Headset (Sennheiser)"]))
             .unwrap();
-        assert_eq!(got.friendly_name, "Microphone (fifine)", "rank must beat system default");
+        assert_eq!(
+            got.friendly_name, "Microphone (fifine)",
+            "rank must beat system default"
+        );
     }
 
     /// The case from the wild: the preferred mic is unplugged mid-session.
@@ -439,20 +449,31 @@ mod priority_tests {
     #[test]
     fn windows_default_is_the_floor_when_nothing_ranked_is_present() {
         let l = list(&["Microphone (Realtek)"], "Microphone (Realtek)");
-        let got = l.resolve_capture_ranked(&prefs(&["Microphone (fifine)"])).unwrap();
-        assert_eq!(got.friendly_name, "Microphone (Realtek)", "must not strand the user");
+        let got = l
+            .resolve_capture_ranked(&prefs(&["Microphone (fifine)"]))
+            .unwrap();
+        assert_eq!(
+            got.friendly_name, "Microphone (Realtek)",
+            "must not strand the user"
+        );
     }
 
     #[test]
     fn an_empty_preference_list_means_the_windows_default() {
         let l = list(&["A (x)", "B (y)"], "B (y)");
-        assert_eq!(l.resolve_capture_ranked(&[]).unwrap().friendly_name, "B (y)");
+        assert_eq!(
+            l.resolve_capture_ranked(&[]).unwrap().friendly_name,
+            "B (y)"
+        );
     }
 
     #[test]
     fn ranking_survives_a_replug_that_renumbers_the_device() {
         // Stored as "fifine", comes back as "4- fifine".
-        let l = list(&["Microphone (4- fifine Microphone)"], "Microphone (4- fifine Microphone)");
+        let l = list(
+            &["Microphone (4- fifine Microphone)"],
+            "Microphone (4- fifine Microphone)",
+        );
         let got = l
             .resolve_capture_ranked(&prefs(&["Microphone (fifine Microphone)"]))
             .unwrap();
@@ -461,7 +482,10 @@ mod priority_tests {
 
     #[test]
     fn no_devices_at_all_resolves_to_nothing() {
-        let l = DeviceList { capture: vec![], render: vec![] };
+        let l = DeviceList {
+            capture: vec![],
+            render: vec![],
+        };
         assert!(l.resolve_capture_ranked(&prefs(&["anything"])).is_none());
     }
 }

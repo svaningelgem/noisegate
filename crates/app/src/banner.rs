@@ -27,12 +27,8 @@ pub fn print() {
 
     // Banner in bright green, tagline in normal green, divider dim.
     print!("{BRIGHT_GREEN}{ASCII_ART}{RESET}");
-    println!(
-        "{GREEN}    real-time mic noise cancellation  •  windows  •  rust{RESET}"
-    );
-    println!(
-        "{DIM_GREEN}    v{VERSION}  •  https://github.com/Yashsomalkar/noisegate{RESET}"
-    );
+    println!("{GREEN}    real-time mic noise cancellation  •  windows  •  rust{RESET}");
+    println!("{DIM_GREEN}    v{VERSION}  •  https://github.com/Yashsomalkar/noisegate{RESET}");
     println!(
         "{DIM_GREEN}    ────────────────────────────────────────────────────────────────────────{RESET}"
     );
@@ -45,10 +41,15 @@ fn enable_vt_processing() {
         ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE,
     };
     unsafe {
-        let Ok(h) = GetStdHandle(STD_OUTPUT_HANDLE) else { return };
+        let Ok(h) = GetStdHandle(STD_OUTPUT_HANDLE) else {
+            return;
+        };
         let mut mode = CONSOLE_MODE(0);
         if GetConsoleMode(h, &mut mode).is_ok() {
-            let _ = SetConsoleMode(h, CONSOLE_MODE(mode.0 | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0));
+            let _ = SetConsoleMode(
+                h,
+                CONSOLE_MODE(mode.0 | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0),
+            );
         }
     }
 }
