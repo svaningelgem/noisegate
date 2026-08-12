@@ -184,6 +184,18 @@ impl DeviceList {
             })
     }
 
+    /// First available microphone from an ordered preference list, else the
+    /// Windows default.
+    ///
+    /// Walking the list rather than insisting on one device is what makes an
+    /// unplugged microphone a non-event: the next one down takes over.
+    pub fn resolve_capture_ranked(&self, preferences: &[String]) -> Option<&Device> {
+        preferences
+            .iter()
+            .find_map(|name| self.resolve_capture(name))
+            .or_else(|| self.default_capture())
+    }
+
     /// Where to render: an explicitly named device, else the one virtual cable.
     pub fn resolve_render(&self, name: &str) -> Result<&Device> {
         if name.is_empty() {
@@ -370,5 +382,86 @@ mod tests {
             list.find_virtual_cable_input(),
             Err(AudioError::VirtualCableMissing)
         ));
+    }
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    fn capture(name: &str) -> Device {
+        Device {
+            id: format!("{{0.0.1.00000000}}.{name}"),
+            friendly_name: name.into(),
+            direction: DeviceDirection::Capture,
+            is_default: false,
+        }
+    }
+
+    fn list(names: &[&str], default: &str) -> DeviceList {
+        DeviceList {
+            capture: names
+                .iter()
+                .map(|n| {
+                    let mut d = capture(n);
+                    d.is_default = *n == default;
+                    d
+                })
+                .collect(),
+            render: vec![],
+        }
+    }
+
+    fn prefs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn takes_the_highest_ranked_device_that_is_present() {
+        let l = list(&["Headset (Sennheiser)", "Microphone (fifine)"], "Headset (Sennheiser)");
+        let got = l
+            .resolve_capture_ranked(&prefs(&["Microphone (fifine)", "Headset (Sennheiser)"]))
+            .unwrap();
+        assert_eq!(got.friendly_name, "Microphone (fifine)", "rank must beat system default");
+    }
+
+    /// The case from the wild: the preferred mic is unplugged mid-session.
+    /// It should drop to the next one rather than stopping to ask.
+    #[test]
+    fn falls_through_to_the_next_when_the_preferred_one_is_gone() {
+        let l = list(&["Headset (Sennheiser)"], "Headset (Sennheiser)");
+        let got = l
+            .resolve_capture_ranked(&prefs(&["Microphone (fifine)", "Headset (Sennheiser)"]))
+            .unwrap();
+        assert_eq!(got.friendly_name, "Headset (Sennheiser)");
+    }
+
+    #[test]
+    fn windows_default_is_the_floor_when_nothing_ranked_is_present() {
+        let l = list(&["Microphone (Realtek)"], "Microphone (Realtek)");
+        let got = l.resolve_capture_ranked(&prefs(&["Microphone (fifine)"])).unwrap();
+        assert_eq!(got.friendly_name, "Microphone (Realtek)", "must not strand the user");
+    }
+
+    #[test]
+    fn an_empty_preference_list_means_the_windows_default() {
+        let l = list(&["A (x)", "B (y)"], "B (y)");
+        assert_eq!(l.resolve_capture_ranked(&[]).unwrap().friendly_name, "B (y)");
+    }
+
+    #[test]
+    fn ranking_survives_a_replug_that_renumbers_the_device() {
+        // Stored as "fifine", comes back as "4- fifine".
+        let l = list(&["Microphone (4- fifine Microphone)"], "Microphone (4- fifine Microphone)");
+        let got = l
+            .resolve_capture_ranked(&prefs(&["Microphone (fifine Microphone)"]))
+            .unwrap();
+        assert_eq!(got.friendly_name, "Microphone (4- fifine Microphone)");
+    }
+
+    #[test]
+    fn no_devices_at_all_resolves_to_nothing() {
+        let l = DeviceList { capture: vec![], render: vec![] };
+        assert!(l.resolve_capture_ranked(&prefs(&["anything"])).is_none());
     }
 }

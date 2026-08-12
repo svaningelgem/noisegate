@@ -14,6 +14,14 @@ pub struct Config {
     /// config file's.
     #[serde(default, alias = "input_device_name")]
     pub input_device: String,
+    /// Microphones in order of preference, by name, best first.
+    ///
+    /// A list rather than one choice because devices come and go: unplug the
+    /// USB mic mid-call and the next one down takes over instead of the app
+    /// stopping to ask. Windows' own default is always the final fallback, so
+    /// the list can never strand you.
+    #[serde(default)]
+    pub microphones: Vec<String>,
     /// Where cleaned audio goes, by name. Empty = auto-detect a virtual cable.
     #[serde(default)]
     pub output_device: String,
@@ -46,6 +54,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             input_device: String::new(),
+            microphones: Vec::new(),
             output_device: String::new(),
             enabled: true,
             attenuation_db: default_atten(),
@@ -73,8 +82,21 @@ impl Config {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)?;
-        let cfg = toml::from_str(&text)?;
+        let mut cfg: Self = toml::from_str(&text)?;
+        // Fold a single legacy choice into the priority list.
+        if cfg.microphones.is_empty() && !cfg.input_device.is_empty() {
+            cfg.microphones.push(std::mem::take(&mut cfg.input_device));
+        }
         Ok(cfg)
+    }
+
+    /// Move `name` to the front, keeping the rest in order and capping the
+    /// list so it doesn't grow forever with devices seen once.
+    pub fn prefer_microphone(&mut self, name: &str) {
+        const MAX_REMEMBERED: usize = 5;
+        self.microphones.retain(|m| m != name);
+        self.microphones.insert(0, name.to_string());
+        self.microphones.truncate(MAX_REMEMBERED);
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

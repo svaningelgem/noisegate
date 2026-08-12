@@ -150,15 +150,22 @@ impl Items {
 /// cable it writes to. The pipeline refuses to start in that case; the menu
 /// shouldn't let it get that far. Greyed out with the reason attached beats an
 /// error dialog after the fact.
-fn mic_entry(name: &str, is_system_default: bool, cable: Option<&str>) -> (String, bool) {
-    match cable {
-        Some(product) => (
-            format!("{name}  — {product}'s own output, would loop"),
-            false,
-        ),
-        None if is_system_default => (format!("{name}  (system default)"), true),
-        None => (name.to_string(), true),
+fn mic_entry(
+    name: &str,
+    is_system_default: bool,
+    cable: Option<&str>,
+    rank: Option<usize>,
+) -> (String, bool) {
+    if let Some(product) = cable {
+        return (format!("{name}  — {product}'s own output, would loop"), false);
     }
+    // Rank first so the preference order reads down the menu.
+    let prefix = match rank {
+        Some(i) => format!("{}.  ", i + 1),
+        None => "     ".to_string(),
+    };
+    let suffix = if is_system_default { "  (system default)" } else { "" };
+    (format!("{prefix}{name}{suffix}"), true)
 }
 
 /// The "Windows default" entry, which is the subtle one: following the system
@@ -185,7 +192,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let mic_menu = Submenu::new("Microphone", true);
     let mut mics = Vec::new();
 
-    let follow_default = cfg.input_device.is_empty();
+    let follow_default = cfg.microphones.is_empty();
     let devices = DeviceList::enumerate();
 
     // Is the system default itself a cable? Then "Windows default" is a trap.
@@ -209,10 +216,12 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
                 mic_menu.append(&PredefinedMenuItem::separator()).ok();
             }
             for d in &list.capture {
-                let checked = !follow_default
-                    && audio_io::devices::same_device_name(&d.friendly_name, &cfg.input_device);
+                let rank = cfg.microphones.iter().position(|m| {
+                    audio_io::devices::same_device_name(m, &d.friendly_name)
+                });
+                let checked = rank == Some(0);
                 let (label, enabled) =
-                    mic_entry(&d.friendly_name, d.is_default, d.virtual_cable_output());
+                    mic_entry(&d.friendly_name, d.is_default, d.virtual_cable_output(), rank);
                 let item = CheckMenuItem::new(label, enabled, checked, None);
                 mic_menu.append(&item).ok();
                 mics.push(MicEntry {
@@ -410,10 +419,16 @@ impl App {
         info!(enabled, "denoising toggled");
     }
 
+    /// Clicking a microphone makes it first choice; everything else shifts
+    /// down. One rule, and it builds the fallback order out of ordinary use.
     fn select_mic(&mut self, device_id: String, name: String) {
         {
             let mut c = self.cfg.write().unwrap();
-            c.input_device = name;
+            if name.is_empty() {
+                c.microphones.clear();      // "Windows default"
+            } else {
+                c.prefer_microphone(&name);
+            }
             if let Err(e) = c.save() {
                 warn!(error = %e, "saving config failed");
             }
@@ -760,12 +775,15 @@ mod tests {
 
     #[test]
     fn system_default_mic_is_marked_in_the_label() {
-        let (label, enabled) = mic_entry("Yeti", false, None);
-        assert_eq!(label, "Yeti");
+        // Unranked entries are padded so their names line up under ranked ones.
+        let (label, enabled) = mic_entry("Yeti", false, None, None);
+        assert_eq!(label.trim(), "Yeti");
+        assert!(!label.trim_start().starts_with(char::is_numeric), "no rank: {label}");
         assert!(enabled);
 
-        let (label, enabled) = mic_entry("Yeti", true, None);
-        assert!(label.starts_with("Yeti") && label.contains("system default"));
+        let (label, enabled) = mic_entry("Yeti", true, None, Some(0));
+        assert!(label.contains("Yeti") && label.contains("system default"));
+        assert!(label.trim_start().starts_with("1."), "rank should lead: {label}");
         assert!(enabled);
     }
 
@@ -777,6 +795,7 @@ mod tests {
             "CABLE Output (VB-Audio Virtual Cable)",
             false,
             Some("VB-Cable"),
+            None,
         );
         assert!(!enabled, "must be greyed out");
         assert!(label.contains("loop"), "should say why: {label}");
@@ -799,7 +818,7 @@ mod tests {
     /// A cable being present must not disable ordinary microphones.
     #[test]
     fn real_microphones_stay_selectable_alongside_a_cable() {
-        let (_, enabled) = mic_entry("Microphone (fifine Microphone)", true, None);
+        let (_, enabled) = mic_entry("Microphone (fifine Microphone)", true, None, Some(1));
         assert!(enabled);
     }
 
