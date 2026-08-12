@@ -1,5 +1,8 @@
 /target
 **/*.rs.bk
+# Local audio for testing the DSP path. Real voices, several MB each — keep
+# them next to the project, out of the history.
+/samples/
 .vscode/
 .idea/
 *.log
