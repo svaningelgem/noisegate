@@ -38,6 +38,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 LicenseFile=..\LICENSE-MIT
 UninstallDisplayIcon={app}\{#AppExe}
+; We stop the app ourselves in PrepareToInstall; Restart Manager can't help
+; with a windowless tray app and its prompt would only add a step.
+CloseApplications=no
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -69,8 +73,12 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     Flags: uninsdeletevalue; Tasks: startup
 
 [Run]
+; Interactive: a checkbox on the finish page, ticked by default.
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName} now"; \
     Flags: nowait postinstall skipifsilent
+; Silent upgrade: bring it back only if we were the ones who stopped it, so an
+; unattended update is invisible rather than leaving someone without a mic.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: ShouldRelaunchSilently
 
 [UninstallDelete]
 ; Logs and config live outside {app}; leave the user's settings alone but take
@@ -82,20 +90,52 @@ Type: filesandordirs; Name: "{userappdata}\{#AppName}\logs"
 // offers to open the download page, so the installer deliberately says nothing
 // about it -- one explanation, in the place where it can actually be acted on.
 
-function InitializeSetup(): Boolean;
+// Stop a running NoiseGate before overwriting its files.
+//
+// Restart Manager is the usual mechanism, but it works by asking windows to
+// close, and this is a tray app with no window -- there is nothing to send
+// WM_CLOSE to. So terminate it outright. Nothing is lost: every setting is
+// written to config.toml the moment it changes, and Windows releases the audio
+// endpoints when the process exits.
+//
+// Run unconditionally rather than only when the tray mutex is held, because
+// `--record` and `--denoise` instances lock the same exe without taking it.
 var
-  Running: Boolean;
+  StoppedRunningInstance: Boolean;
+
+procedure StopRunningInstance();
+var
+  ResultCode: Integer;
 begin
-  // Installing over a running tray app leaves a locked exe and a confusing
-  // half-upgrade.
-  Running := CheckForMutexes('Local\NoiseGate.SingleInstance');
-  if Running then
-  begin
-    MsgBox('NoiseGate is currently running.' + #13#10#13#10 +
-           'Please quit it first (right-click the tray icon, then "Quit NoiseGate") ' +
-           'and run this installer again.', mbError, MB_OK);
-    Result := False;
-  end
+  if CheckForMutexes('Local\NoiseGate.SingleInstance') then
+    StoppedRunningInstance := True;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM noisegate.exe /F',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // taskkill returns before the handles are actually released.
+  if ResultCode = 0 then
+    Sleep(1000);
+end;
+
+function ShouldRelaunchSilently(): Boolean;
+begin
+  Result := StoppedRunningInstance and WizardSilent();
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopRunningInstance();
+  if CheckForMutexes('Local\NoiseGate.SingleInstance') then
+    Result := 'NoiseGate is still running and could not be closed automatically.' + #13#10#13#10 +
+              'Please quit it from the tray icon (right-click, "Quit NoiseGate") and run ' +
+              'this installer again.'
   else
-    Result := True;
+    Result := '';
+end;
+
+// Same courtesy on the way out, so uninstalling doesn't leave the tray icon
+// behind pointing at files that no longer exist.
+function InitializeUninstall(): Boolean;
+begin
+  StopRunningInstance();
+  Result := True;
 end;
