@@ -170,8 +170,8 @@ input_device_id = "{0.0.1.00000000}.{...your-id...}"
 `%APPDATA%\NoiseGate\config.toml` — created on first run:
 
 ```toml
-input_device_id = ""        # empty = default mic
-output_device_id = ""        # empty = auto-detect VB-Cable
+input_device = ""            # microphone by name; empty = Windows default
+output_device = ""           # by name; empty = auto-detect a virtual cable
 enabled = true
 attenuation_db = 100.0       # 6.0 = subtle, 100.0 = max. ONNX models only;
                              # RNNoise has no equivalent knob.

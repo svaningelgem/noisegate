@@ -69,7 +69,14 @@ fn read_wav(path: &Path) -> Result<Vec<f32>> {
 ///
 /// Doubles as the only way to exercise the capture path end to end when no
 /// virtual cable is installed.
-pub fn record(device_id: &str, seconds: f32, out: &Path) -> Result<()> {
+pub fn record(device_name: &str, seconds: f32, out: &Path) -> Result<()> {
+    // Names are what the config and CLI speak; ids are resolved here.
+    let devices = audio_io::devices::DeviceList::enumerate().map_err(|e| anyhow::anyhow!(e))?;
+    let device = devices
+        .resolve_capture(device_name)
+        .ok_or_else(|| anyhow::anyhow!("no microphone matching {device_name:?}"))?;
+    let device_id = device.id.clone();
+    info!(mic = %device.friendly_name, "recording from");
     let captured: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
 
     struct Sink(Arc<Mutex<Vec<f32>>>);
@@ -88,7 +95,7 @@ pub fn record(device_id: &str, seconds: f32, out: &Path) -> Result<()> {
     }
 
     info!(seconds, path = %out.display(), "recording — make some noise");
-    let capture = audio_io::WasapiCapture::start(device_id, Box::new(Sink(captured.clone())))
+    let capture = audio_io::WasapiCapture::start(&device_id, Box::new(Sink(captured.clone())))
         .map_err(|e| anyhow::anyhow!(e))
         .context("opening the capture device")?;
 

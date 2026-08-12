@@ -4,17 +4,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Stable WASAPI device ID for the input mic. Empty = default.
+    /// Microphone to capture from, by the name Windows shows. Empty = follow
+    /// the Windows default.
+    ///
+    /// A name rather than an endpoint id: ids are opaque GUIDs that nobody can
+    /// edit by hand, and they don't survive replugging the device — Windows
+    /// re-enumerates it with a fresh one. The name is stable, readable, and
+    /// what the tray menu shows. Resolving name to id is our problem, not the
+    /// config file's.
+    #[serde(default, alias = "input_device_name")]
+    pub input_device: String,
+    /// Where cleaned audio goes, by name. Empty = auto-detect a virtual cable.
     #[serde(default)]
-    pub input_device_id: String,
-    /// Friendly name of that mic, so it can still be found after Windows
-    /// re-enumerates the device and issues a new id.
-    #[serde(default)]
-    pub input_device_name: String,
-    /// Stable WASAPI device ID for the output target (VB-Cable Input).
-    /// Empty = auto-detect by friendly name.
-    #[serde(default)]
-    pub output_device_id: String,
+    pub output_device: String,
     /// Master enable. When false, the pipeline runs in bypass mode (passes
     /// audio through without DSP) so toggling is instant.
     #[serde(default = "default_true")]
@@ -29,10 +31,11 @@ pub struct Config {
     /// `--features onnx`.
     #[serde(default)]
     pub model_path: String,
-    /// Run the ONNX model instead of the built-in RNNoise. Kept separate from
-    /// `model_path` so switching back to RNNoise doesn't forget which model
-    /// you had configured.
-    #[serde(default)]
+    /// Run the ONNX model instead of the built-in RNNoise. On by default: on
+    /// competing speech DeepFilterNet3 removes ~19 dB where RNNoise removes
+    /// ~0.5 dB, which is the difference between usable and not. Falls back to
+    /// RNNoise on its own if no model is present.
+    #[serde(default = "default_true")]
     pub use_onnx: bool,
 }
 
@@ -42,14 +45,13 @@ fn default_atten() -> f32 { 100.0 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            input_device_id: String::new(),
-            input_device_name: String::new(),
-            output_device_id: String::new(),
+            input_device: String::new(),
+            output_device: String::new(),
             enabled: true,
             attenuation_db: default_atten(),
             auto_start: false,
             model_path: String::new(),
-            use_onnx: false,
+            use_onnx: true,
         }
     }
 }

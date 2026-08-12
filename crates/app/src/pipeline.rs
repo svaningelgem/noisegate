@@ -42,64 +42,52 @@ impl Pipeline {
 
         // Resolve devices.
         let devices = DeviceList::enumerate().context("enumerating audio devices")?;
-        let input_id = if snapshot.input_device_id.is_empty() {
-            devices
-                .default_capture()
-                .map(|d| d.id.clone())
-                .unwrap_or_default()
-        } else {
-            match devices.resolve_capture(&snapshot.input_device_id, &snapshot.input_device_name) {
-                Some(d) => {
-                    if d.id != snapshot.input_device_id {
-                        info!(
-                            name = %d.friendly_name,
-                            "configured microphone id is stale; matched it by name instead"
-                        );
-                    }
-                    d.id.clone()
+        // Config names devices; ids are an internal detail resolved here,
+        // fresh on every start and every restart.
+        let input = devices
+            .resolve_capture(&snapshot.input_device)
+            .ok_or_else(|| {
+                if snapshot.input_device.is_empty() {
+                    anyhow::anyhow!("no microphone is available")
+                } else {
+                    anyhow::anyhow!(
+                        "microphone {:?} is not available (unplugged?). \
+                         Pick one from the tray menu",
+                        snapshot.input_device
+                    )
                 }
-                None => anyhow::bail!(
-                    "the configured microphone is gone (it may have been unplugged). \
-                     Pick one from the tray menu"
-                ),
-            }
-        };
+            })?
+            .clone();
 
         // Installing a virtual cable usually makes it the default *capture*
-        // device too. Left alone, "use the Windows default microphone" then
-        // means recording from the same cable we render into — the cable
-        // feeding itself, with no real microphone anywhere in the loop.
-        if let Some(product) = devices
-            .capture_by_id(&input_id)
-            .and_then(|d| d.virtual_cable_output())
-        {
+        // device too. Left alone, "follow the Windows default" then means
+        // recording from the same cable we render into — the cable feeding
+        // itself, with no real microphone anywhere in the loop.
+        if let Some(product) = input.virtual_cable_output() {
             anyhow::bail!(
                 "the selected microphone is {product}'s own output, which is where NoiseGate \
                  sends audio — routing it back in would loop. Pick a real microphone from the \
-                 tray menu, or set input_device_id in config.toml"
+                 tray menu"
             );
         }
+
         // Auto-detection failing must not fall back to the default render
         // device: that would play the microphone out of whatever speakers,
         // Bluetooth headset or meeting-room HDMI display happens to be
         // default. Fail closed and let the user fix the routing.
-        let output_id = if snapshot.output_device_id.is_empty() {
-            devices
-                .find_virtual_cable_input()
-                .map(|d| d.id.clone())
-                .with_context(|| {
-                    format!(
-                        "no virtual audio cable is installed (looked for {}). Cleaned audio needs \
-                         one so other apps can hear it as a microphone. Install VB-Cable, or set \
-                         output_device_id in config.toml to an id from `--list-devices`",
-                        audio_io::devices::known_cable_products().join(", ")
-                    )
-                })?
-        } else {
-            snapshot.output_device_id.clone()
-        };
-
-        info!(input = %input_id, output = %output_id, "resolved audio devices");
+        let output = devices
+            .resolve_render(&snapshot.output_device)
+            .with_context(|| {
+                format!(
+                    "no virtual audio cable is installed (looked for {}). Cleaned audio needs \
+                     one so other apps can hear it as a microphone. Install VB-Cable, or name \
+                     one in output_device",
+                    audio_io::devices::known_cable_products().join(", ")
+                )
+            })?
+            .clone();
+        let (input_id, output_id) = (input.id.clone(), output.id.clone());
+        info!(mic = %input.friendly_name, to = %output.friendly_name, "using devices");
 
         // Build the rings.
         let (prod_a, mut cons_a) = HeapRb::<Frame>::new(RING_FRAMES).split();

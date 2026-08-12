@@ -215,9 +215,9 @@ fn real_main(has_console: bool) -> Result<()> {
     // is for once it's wired up).
     if let Some(mic_filter) = args.mic.as_deref() {
         match resolve_mic_by_substring(mic_filter) {
-            Ok(id) => {
-                info!(filter = mic_filter, resolved = %id, "--mic override applied");
-                cfg_value.input_device_id = id;
+            Ok(name) => {
+                info!(filter = mic_filter, resolved = %name, "--mic override applied");
+                cfg_value.input_device = name;
             }
             Err(e) => {
                 anyhow::bail!("--mic '{}' did not match any input device: {e}", mic_filter);
@@ -372,7 +372,7 @@ fn resolve_mic_by_substring(needle: &str) -> Result<String> {
         .collect();
     match matches.as_slice() {
         [] => Err(anyhow::anyhow!("no capture device matched")),
-        [d] => Ok(d.id.clone()),
+        [d] => Ok(d.friendly_name.clone()),
         many => {
             let names: Vec<_> = many.iter().map(|d| d.friendly_name.as_str()).collect();
             Err(anyhow::anyhow!(

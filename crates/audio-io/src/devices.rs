@@ -167,20 +167,37 @@ impl DeviceList {
     /// prefix ("Microphone (4- fifine Microphone)"). The id we stored last
     /// week is then dead, even though the same physical microphone is sitting
     /// right there. So fall back to the friendly name before giving up.
-    pub fn resolve_capture(&self, id: &str, remembered_name: &str) -> Option<&Device> {
-        if let Some(d) = self.capture_by_id(id) {
-            return Some(d);
+    pub fn resolve_capture(&self, name: &str) -> Option<&Device> {
+        if name.is_empty() {
+            return self.default_capture();
         }
-        if !remembered_name.is_empty() {
-            if let Some(d) = self
-                .capture
-                .iter()
-                .find(|d| same_device_name(&d.friendly_name, remembered_name))
-            {
-                return Some(d);
-            }
+        // Exact first, then ignoring the instance prefix Windows adds on
+        // re-enumeration. Two devices sharing a name is possible but rare;
+        // taking the first is better than refusing to start.
+        self.capture
+            .iter()
+            .find(|d| d.friendly_name == name)
+            .or_else(|| {
+                self.capture
+                    .iter()
+                    .find(|d| same_device_name(&d.friendly_name, name))
+            })
+    }
+
+    /// Where to render: an explicitly named device, else the one virtual cable.
+    pub fn resolve_render(&self, name: &str) -> Result<&Device> {
+        if name.is_empty() {
+            return self.find_virtual_cable_input();
         }
-        None
+        self.render
+            .iter()
+            .find(|d| d.friendly_name == name)
+            .or_else(|| {
+                self.render
+                    .iter()
+                    .find(|d| same_device_name(&d.friendly_name, name))
+            })
+            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
     }
 }
 
@@ -213,11 +230,8 @@ mod tests {
             capture: vec![capture("Microphone (4- fifine Microphone)")],
             render: vec![],
         };
-        let dead_id = "{0.0.1.00000000}.{42f318e8-0f34-4e66-aa17-682325b9dd46}";
-
-        assert!(list.capture_by_id(dead_id).is_none());
         let found = list
-            .resolve_capture(dead_id, "Microphone (fifine Microphone)")
+            .resolve_capture("Microphone (fifine Microphone)")
             .expect("should recover by name");
         assert_eq!(found.friendly_name, "Microphone (4- fifine Microphone)");
     }
@@ -242,28 +256,39 @@ mod tests {
     }
 
     #[test]
-    fn resolution_prefers_the_exact_id_over_a_name_match() {
+    fn an_exact_name_wins_over_a_prefix_insensitive_one() {
         let list = DeviceList {
             capture: vec![
-                capture("Microphone (fifine Microphone)"),
                 capture("Microphone (4- fifine Microphone)"),
+                capture("Microphone (fifine Microphone)"),
             ],
             render: vec![],
         };
-        let exact = &list.capture[1];
-        let got = list
-            .resolve_capture(&exact.id, "Microphone (fifine Microphone)")
-            .unwrap();
-        assert_eq!(got.id, exact.id, "id match must win");
+        let got = list.resolve_capture("Microphone (fifine Microphone)").unwrap();
+        assert_eq!(got.friendly_name, "Microphone (fifine Microphone)");
     }
 
     #[test]
-    fn unknown_device_with_no_name_hint_stays_unresolved() {
+    fn an_empty_name_means_the_windows_default() {
+        let mut chosen = capture("Microphone (Realtek Audio)");
+        chosen.is_default = true;
+        let list = DeviceList {
+            capture: vec![capture("Microphone (fifine Microphone)"), chosen],
+            render: vec![],
+        };
+        assert_eq!(
+            list.resolve_capture("").unwrap().friendly_name,
+            "Microphone (Realtek Audio)"
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_nothing_stays_unresolved() {
         let list = DeviceList {
             capture: vec![capture("Microphone (Realtek Audio)")],
             render: vec![],
         };
-        assert!(list.resolve_capture("{dead}", "").is_none());
+        assert!(list.resolve_capture("Microphone (Gone)").is_none());
     }
 
     #[test]

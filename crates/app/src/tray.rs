@@ -165,7 +165,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     let mic_menu = Submenu::new("Microphone", true);
     let mut mics = Vec::new();
 
-    let follow_default = cfg.input_device_id.is_empty();
+    let follow_default = cfg.input_device.is_empty();
     let default_item = CheckMenuItem::new("Windows default", true, follow_default, None);
     mic_menu.append(&default_item).ok();
     mics.push(MicEntry {
@@ -180,7 +180,8 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
                 mic_menu.append(&PredefinedMenuItem::separator()).ok();
             }
             for d in &list.capture {
-                let checked = !follow_default && d.id == cfg.input_device_id;
+                let checked = !follow_default
+                    && audio_io::devices::same_device_name(&d.friendly_name, &cfg.input_device);
                 let item = CheckMenuItem::new(mic_label(&d.friendly_name, d.is_default), true, checked, None);
                 mic_menu.append(&item).ok();
                 mics.push(MicEntry {
@@ -381,10 +382,7 @@ impl App {
     fn select_mic(&mut self, device_id: String, name: String) {
         {
             let mut c = self.cfg.write().unwrap();
-            c.input_device_id = device_id.clone();
-            // Remembered so the device can still be found after Windows
-            // re-enumerates it and hands out a different id.
-            c.input_device_name = name;
+            c.input_device = name;
             if let Err(e) = c.save() {
                 warn!(error = %e, "saving config failed");
             }
