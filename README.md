@@ -266,6 +266,20 @@ The bundled RNNoise model (via `nnnoiseless`) is BSD-licensed — fine for any u
 
 $0 for personal use. Every component is free. No driver-signing certs required (we don't ship a driver — VB-Cable does).
 
+## Contributing
+
+Every pull request runs format, lint, build, test and a coverage ratchet on
+Windows — see [`docs/testing.md`](docs/testing.md). The coverage threshold is a
+floor that may be raised but never lowered; the long-term goal is 100%, and the
+doc is honest about which parts of the codebase can't get there without a
+hardware abstraction that doesn't exist yet.
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features
+cargo test --all-features
+```
+
 ## Not included (yet)
 
 - macOS / Linux backends (the audio-io crate is Windows-only; the rest is portable).

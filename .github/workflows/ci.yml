@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on warnings rather than letting them accumulate.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Windows-only: the whole crate graph is WASAPI, and audio-io won't even
+  # compile meaningfully anywhere else.
+  check:
+    name: format, lint, build, test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        # --all-targets so tests are linted too; --all-features so the ONNX
+        # path is covered, which is the default we ship.
+        run: cargo clippy --all-targets --all-features
+
+      - name: Build
+        run: cargo build --release --all-features
+
+      - name: Test
+        run: cargo test --all-features
+
+  coverage:
+    name: test coverage
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure coverage
+        # A ratchet, not a target. The threshold is the level already reached,
+        # so a pull request may raise it but never lower it. Raise the number
+        # here whenever coverage improves; the goal is 100%, but see
+        # docs/testing.md for why large parts of this codebase cannot be
+        # covered without a hardware abstraction that does not exist yet.
+        run: cargo llvm-cov --all-features --fail-under-lines 29
+
+      - name: Coverage summary
+        if: always()
+        run: cargo llvm-cov --all-features --summary-only >> $env:GITHUB_STEP_SUMMARY
