@@ -7,6 +7,10 @@ pub struct Config {
     /// Stable WASAPI device ID for the input mic. Empty = default.
     #[serde(default)]
     pub input_device_id: String,
+    /// Friendly name of that mic, so it can still be found after Windows
+    /// re-enumerates the device and issues a new id.
+    #[serde(default)]
+    pub input_device_name: String,
     /// Stable WASAPI device ID for the output target (VB-Cable Input).
     /// Empty = auto-detect by friendly name.
     #[serde(default)]
@@ -39,6 +43,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             input_device_id: String::new(),
+            input_device_name: String::new(),
             output_device_id: String::new(),
             enabled: true,
             attenuation_db: default_atten(),

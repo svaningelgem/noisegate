@@ -48,7 +48,21 @@ impl Pipeline {
                 .map(|d| d.id.clone())
                 .unwrap_or_default()
         } else {
-            snapshot.input_device_id.clone()
+            match devices.resolve_capture(&snapshot.input_device_id, &snapshot.input_device_name) {
+                Some(d) => {
+                    if d.id != snapshot.input_device_id {
+                        info!(
+                            name = %d.friendly_name,
+                            "configured microphone id is stale; matched it by name instead"
+                        );
+                    }
+                    d.id.clone()
+                }
+                None => anyhow::bail!(
+                    "the configured microphone is gone (it may have been unplugged). \
+                     Pick one from the tray menu"
+                ),
+            }
         };
 
         // Installing a virtual cable usually makes it the default *capture*
@@ -110,24 +124,35 @@ impl Pipeline {
                 #[cfg(windows)]
                 let _mmcss = audio_io::mmcss_pro_audio_for_current_thread();
                 let _ = stats_for_thread; // keep alive via host
-                let mut starved = 0u64;
-                let mut last_starve_log = std::time::Instant::now()
-                    - std::time::Duration::from_secs(60); // force first one to log
+                // An empty ring is not news: this thread polls every 2 ms
+                // while frames arrive every 10 ms, so it finds nothing most
+                // of the time even when everything is healthy. Only a long
+                // gap means anything, and that is what gets reported.
+                let mut last_frame_at = std::time::Instant::now();
+                let mut reported_gap = false;
                 while !shutdown_dsp.load(Ordering::Acquire) {
                     let mut frame = match cons_a.try_pop() {
                         Some(f) => f,
                         None => {
-                            starved += 1;
-                            // Log on the first starve in a 5-second window so
-                            // the issue is visible without spamming.
-                            if last_starve_log.elapsed() > std::time::Duration::from_secs(5) {
-                                warn!(starved, "DSP thread starved — capture not delivering frames");
-                                last_starve_log = std::time::Instant::now();
+                            if !reported_gap
+                                && last_frame_at.elapsed() > std::time::Duration::from_secs(2)
+                            {
+                                warn!(
+                                    gap_ms = last_frame_at.elapsed().as_millis() as u64,
+                                    "no audio from the microphone — it may have been unplugged, \
+                                     muted, or blocked in Windows privacy settings"
+                                );
+                                reported_gap = true;
                             }
                             std::thread::sleep(std::time::Duration::from_millis(2));
                             continue;
                         }
                     };
+                    if reported_gap {
+                        info!("microphone audio resumed");
+                        reported_gap = false;
+                    }
+                    last_frame_at = std::time::Instant::now();
                     if let Err(e) = host.process(&mut frame) {
                         warn!(error = %e, "denoiser error; passing frame through");
                     }
@@ -217,6 +242,14 @@ impl Pipeline {
 
     pub fn denoiser_name(&self) -> &'static str {
         self.denoiser_name
+    }
+
+    /// Frames processed so far. The tray watches this: a counter that stops
+    /// advancing means the capture stream died, which WASAPI reports by
+    /// simply never signalling its event again. Silence still produces
+    /// frames, so this distinguishes "quiet room" from "dead device".
+    pub fn frames_processed(&self) -> u64 {
+        self.stats.frames.load(Ordering::Relaxed)
     }
 }
 

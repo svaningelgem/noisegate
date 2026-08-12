@@ -52,6 +52,7 @@ pub fn run(
         tray: None,
         items: None,
         last_tooltip_update: Instant::now(),
+        health: Health::new(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -73,6 +74,39 @@ struct App {
     tray: Option<TrayIcon>,
     items: Option<Items>,
     last_tooltip_update: Instant,
+    health: Health,
+}
+
+/// Watches for the pipeline going quiet without saying so.
+///
+/// WASAPI reports a dead capture stream by simply never signalling its event
+/// again — no error, no callback. The audio threads stay alive, the render
+/// side keeps writing silence, and the app looks perfectly healthy while the
+/// microphone has been off the air for a quarter of an hour. Frames stop
+/// advancing though, and silence still produces frames, so that counter is
+/// the one honest signal available.
+struct Health {
+    last_frames: u64,
+    last_change: Instant,
+    last_recovery: Instant,
+    stalled: bool,
+}
+
+/// Frames stop for this long => the stream is dead, not the room quiet.
+const STALL_AFTER: Duration = Duration::from_secs(2);
+/// Don't hammer the device if it stays gone.
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
+
+impl Health {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            last_frames: 0,
+            last_change: now,
+            last_recovery: now,
+            stalled: false,
+        }
+    }
 }
 
 /// One entry in the microphone submenu.
@@ -80,6 +114,7 @@ struct MicEntry {
     item: CheckMenuItem,
     /// Empty string = follow the Windows default device.
     device_id: String,
+    friendly_name: String,
 }
 
 /// One entry in the denoiser submenu.
@@ -136,6 +171,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     mics.push(MicEntry {
         item: default_item,
         device_id: String::new(),
+        friendly_name: String::new(),
     });
 
     match DeviceList::enumerate() {
@@ -150,6 +186,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
                 mics.push(MicEntry {
                     item,
                     device_id: d.id.clone(),
+                    friendly_name: d.friendly_name.clone(),
                 });
             }
         }
@@ -222,6 +259,23 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
 }
 
 impl App {
+    /// Rebuild the pipeline without telling the user. Used by the watchdog,
+    /// where a dialog every five seconds would be its own kind of failure.
+    fn restart_pipeline_quietly(&mut self) {
+        drop(self.pipeline.take());
+        match Pipeline::start(self.cfg.clone()) {
+            Ok(p) => {
+                info!(denoiser = p.denoiser_name(), "audio restarted");
+                self.health.last_frames = p.frames_processed();
+                self.health.last_change = Instant::now();
+                self.health.stalled = false;
+                self.pipeline = Some(p);
+            }
+            Err(e) => warn!(error = %e, "automatic restart failed; will retry"),
+        }
+        self.refresh_icon();
+    }
+
     /// Restart the audio pipeline against the current config. The old one is
     /// dropped first so it releases the capture device before we reopen it.
     fn restart_pipeline(&mut self) {
@@ -244,13 +298,60 @@ impl App {
         self.refresh_icon();
     }
 
+    /// Watch the frame counter and quietly rebuild the pipeline if it stops.
+    ///
+    /// Silently delivering nothing is the worst failure this app has: the
+    /// icon stays teal, the log says "running", and the call on the other end
+    /// hears nothing. Recovery is deliberately quiet — no dialog, because the
+    /// usual cause is a device that vanished and came back, and interrupting
+    /// someone mid-call to announce that would be worse than fixing it.
+    fn check_health(&mut self) {
+        let Some(frames) = self.pipeline.as_ref().map(|p| p.frames_processed()) else {
+            return; // Nothing running; a failed start already badged the icon.
+        };
+        if frames != self.health.last_frames {
+            self.health.last_frames = frames;
+            self.health.last_change = Instant::now();
+            if self.health.stalled {
+                info!("audio recovered");
+                self.health.stalled = false;
+                self.refresh_icon();
+            }
+            return;
+        }
+        if self.health.last_change.elapsed() < STALL_AFTER {
+            return;
+        }
+        if !self.health.stalled {
+            warn!(
+                stalled_for_ms = self.health.last_change.elapsed().as_millis() as u64,
+                "audio stopped flowing — the capture device probably went away"
+            );
+            self.health.stalled = true;
+            // Badge immediately: even if recovery fails, stop looking healthy.
+            self.refresh_icon();
+        }
+        if self.health.last_recovery.elapsed() < RECOVERY_INTERVAL {
+            return;
+        }
+        self.health.last_recovery = Instant::now();
+        info!("attempting to restart audio");
+        self.restart_pipeline_quietly();
+    }
+
     /// Keep the icon in step with both bits of state it shows: teal vs orange
     /// for on/off, and the badge for "audio isn't running at all".
     fn refresh_icon(&self) {
         if let Some(tray) = &self.tray {
             let enabled = self.cfg.read().unwrap().enabled;
-            let _ = tray.set_icon(Some(build_icon(enabled, self.pipeline.is_none())));
+            let _ = tray.set_icon(Some(build_icon(enabled, self.audio_is_broken())));
         }
+    }
+
+    /// No pipeline at all, or one that has stopped delivering. Both mean the
+    /// microphone isn't reaching anybody, which is what the badge is for.
+    fn audio_is_broken(&self) -> bool {
+        self.pipeline.is_none() || self.health.stalled
     }
 
     /// The single path for turning denoising on and off, whichever surface
@@ -277,10 +378,13 @@ impl App {
         info!(enabled, "denoising toggled");
     }
 
-    fn select_mic(&mut self, device_id: String) {
+    fn select_mic(&mut self, device_id: String, name: String) {
         {
             let mut c = self.cfg.write().unwrap();
             c.input_device_id = device_id.clone();
+            // Remembered so the device can still be found after Windows
+            // re-enumerates it and hands out a different id.
+            c.input_device_name = name;
             if let Err(e) = c.save() {
                 warn!(error = %e, "saving config failed");
             }
@@ -417,8 +521,11 @@ impl ApplicationHandler<UserEvent> for App {
         } else if id == *items.quit.id() {
             info!("quit requested");
             event_loop.exit();
-        } else if let Some(device_id) = items.mic_by_id(&id).map(|m| m.device_id.clone()) {
-            self.select_mic(device_id);
+        } else if let Some((device_id, name)) = items
+            .mic_by_id(&id)
+            .map(|m| (m.device_id.clone(), m.friendly_name.clone()))
+        {
+            self.select_mic(device_id, name);
         } else if let Some(onnx) = items.denoiser_by_id(&id).map(|d| d.onnx) {
             self.select_denoiser(onnx);
         }
@@ -434,12 +541,14 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.check_health();
         if self.last_tooltip_update.elapsed() >= Duration::from_millis(1000) {
             self.last_tooltip_update = Instant::now();
             if let Some(tray) = &self.tray {
-                let text = match &self.pipeline {
-                    Some(p) => tooltip(p),
-                    None => "NoiseGate — stopped (pick a microphone)".to_string(),
+                let text = match (&self.pipeline, self.health.stalled) {
+                    (Some(_), true) => "NoiseGate — no audio from the microphone".to_string(),
+                    (Some(p), false) => tooltip(p),
+                    (None, _) => "NoiseGate — stopped (pick a microphone)".to_string(),
                 };
                 let _ = tray.set_tooltip(Some(text));
             }

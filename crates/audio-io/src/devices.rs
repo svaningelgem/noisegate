@@ -55,6 +55,30 @@ pub fn known_cable_products() -> Vec<&'static str> {
     KNOWN_CABLES.iter().map(|c| c.product).collect()
 }
 
+/// Compare device names ignoring the instance prefix Windows adds when a
+/// device is re-enumerated: "Microphone (fifine Microphone)" and
+/// "Microphone (4- fifine Microphone)" are the same hardware.
+pub fn same_device_name(a: &str, b: &str) -> bool {
+    strip_instance_prefix(a) == strip_instance_prefix(b)
+}
+
+/// Drop a leading "<digits>- " from each parenthesised part.
+fn strip_instance_prefix(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (i, part) in name.split('(').enumerate() {
+        if i > 0 {
+            out.push('(');
+        }
+        let trimmed = part.trim_start();
+        let stripped = match trimmed.split_once("- ") {
+            Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => tail,
+            _ => trimmed,
+        };
+        out.push_str(stripped.trim());
+    }
+    out
+}
+
 fn matches_all(name: &str, needles: &[&str]) -> bool {
     let lower = name.to_ascii_lowercase();
     needles.iter().all(|n| lower.contains(n))
@@ -135,6 +159,29 @@ impl DeviceList {
     pub fn capture_by_id(&self, id: &str) -> Option<&Device> {
         self.capture.iter().find(|d| d.id == id)
     }
+
+    /// Resolve a remembered capture device.
+    ///
+    /// Endpoint ids are not as stable as they look: replug a USB microphone
+    /// and Windows re-enumerates it with a fresh GUID and a bumped instance
+    /// prefix ("Microphone (4- fifine Microphone)"). The id we stored last
+    /// week is then dead, even though the same physical microphone is sitting
+    /// right there. So fall back to the friendly name before giving up.
+    pub fn resolve_capture(&self, id: &str, remembered_name: &str) -> Option<&Device> {
+        if let Some(d) = self.capture_by_id(id) {
+            return Some(d);
+        }
+        if !remembered_name.is_empty() {
+            if let Some(d) = self
+                .capture
+                .iter()
+                .find(|d| same_device_name(&d.friendly_name, remembered_name))
+            {
+                return Some(d);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +202,68 @@ mod tests {
             direction: DeviceDirection::Capture,
             ..render(name)
         }
+    }
+
+    /// The exact failure seen in the wild: a USB mic replugged mid-session
+    /// comes back with a new GUID and a "4- " instance prefix, so the stored
+    /// id is dead while the hardware is still sitting there.
+    #[test]
+    fn a_replugged_mic_is_found_by_name_when_its_id_dies() {
+        let list = DeviceList {
+            capture: vec![capture("Microphone (4- fifine Microphone)")],
+            render: vec![],
+        };
+        let dead_id = "{0.0.1.00000000}.{42f318e8-0f34-4e66-aa17-682325b9dd46}";
+
+        assert!(list.capture_by_id(dead_id).is_none());
+        let found = list
+            .resolve_capture(dead_id, "Microphone (fifine Microphone)")
+            .expect("should recover by name");
+        assert_eq!(found.friendly_name, "Microphone (4- fifine Microphone)");
+    }
+
+    #[test]
+    fn instance_prefixes_do_not_make_devices_different() {
+        assert!(same_device_name(
+            "Microphone (fifine Microphone)",
+            "Microphone (4- fifine Microphone)"
+        ));
+        assert!(same_device_name(
+            "Microphone (2- USB Audio Device)",
+            "Microphone (7- USB Audio Device)"
+        ));
+        // Genuinely different hardware must not collapse together.
+        assert!(!same_device_name(
+            "Microphone (fifine Microphone)",
+            "Microphone (Realtek Audio)"
+        ));
+        // A leading number that isn't an instance prefix is left alone.
+        assert!(!same_device_name("Line 1 (VAC)", "Line 2 (VAC)"));
+    }
+
+    #[test]
+    fn resolution_prefers_the_exact_id_over_a_name_match() {
+        let list = DeviceList {
+            capture: vec![
+                capture("Microphone (fifine Microphone)"),
+                capture("Microphone (4- fifine Microphone)"),
+            ],
+            render: vec![],
+        };
+        let exact = &list.capture[1];
+        let got = list
+            .resolve_capture(&exact.id, "Microphone (fifine Microphone)")
+            .unwrap();
+        assert_eq!(got.id, exact.id, "id match must win");
+    }
+
+    #[test]
+    fn unknown_device_with_no_name_hint_stays_unresolved() {
+        let list = DeviceList {
+            capture: vec![capture("Microphone (Realtek Audio)")],
+            render: vec![],
+        };
+        assert!(list.resolve_capture("{dead}", "").is_none());
     }
 
     #[test]
