@@ -21,10 +21,15 @@ pub struct Config {
     /// Auto-start at user login.
     #[serde(default)]
     pub auto_start: bool,
-    /// Path to an ONNX denoise model. Empty = use the built-in RNNoise
-    /// backend. Only honoured by builds made with `--features onnx`.
+    /// Path to an ONNX denoise model. Only honoured by builds made with
+    /// `--features onnx`.
     #[serde(default)]
     pub model_path: String,
+    /// Run the ONNX model instead of the built-in RNNoise. Kept separate from
+    /// `model_path` so switching back to RNNoise doesn't forget which model
+    /// you had configured.
+    #[serde(default)]
+    pub use_onnx: bool,
 }
 
 fn default_true() -> bool { true }
@@ -39,6 +44,7 @@ impl Default for Config {
             attenuation_db: default_atten(),
             auto_start: false,
             model_path: String::new(),
+            use_onnx: false,
         }
     }
 }
@@ -72,6 +78,26 @@ impl Config {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(&path, text)?;
         Ok(())
+    }
+}
+
+impl Config {
+    /// The ONNX model to offer in the tray, if there is one: whatever
+    /// `model_path` points at, else a `model.onnx` sitting next to the
+    /// executable so "drop the file in and pick it" works with no config
+    /// editing at all.
+    pub fn available_model(&self) -> Option<PathBuf> {
+        if !self.model_path.is_empty() {
+            let p = PathBuf::from(&self.model_path);
+            return p.exists().then_some(p);
+        }
+        let beside = std::env::current_exe().ok()?.parent()?.join("model.onnx");
+        beside.exists().then_some(beside)
+    }
+
+    /// The model to actually load, honouring the on/off switch.
+    pub fn active_model(&self) -> Option<PathBuf> {
+        self.use_onnx.then(|| self.available_model()).flatten()
     }
 }
 

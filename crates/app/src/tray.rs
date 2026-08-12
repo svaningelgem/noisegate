@@ -82,9 +82,17 @@ struct MicEntry {
     device_id: String,
 }
 
+/// One entry in the denoiser submenu.
+struct DenoiserEntry {
+    item: CheckMenuItem,
+    /// True for the ONNX model, false for built-in RNNoise.
+    onnx: bool,
+}
+
 struct Items {
     enable: CheckMenuItem,
     mics: Vec<MicEntry>,
+    denoisers: Vec<DenoiserEntry>,
     auto_start: CheckMenuItem,
     open_logs: MenuItem,
     quit: MenuItem,
@@ -93,6 +101,10 @@ struct Items {
 impl Items {
     fn mic_by_id(&self, id: &MenuId) -> Option<&MicEntry> {
         self.mics.iter().find(|m| m.item.id() == id)
+    }
+
+    fn denoiser_by_id(&self, id: &MenuId) -> Option<&DenoiserEntry> {
+        self.denoisers.iter().find(|d| d.item.id() == id)
     }
 }
 
@@ -148,6 +160,40 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         }
     }
     menu.append(&mic_menu).ok();
+
+    // Denoiser picker.
+    let dsp_menu = Submenu::new("Denoiser", true);
+    let mut denoisers = Vec::new();
+    let model = cfg.available_model();
+    let onnx_active = cfg.active_model().is_some();
+
+    let rnnoise = CheckMenuItem::new("RNNoise (built-in)", true, !onnx_active, None);
+    dsp_menu.append(&rnnoise).ok();
+    denoisers.push(DenoiserEntry { item: rnnoise, onnx: false });
+
+    match (cfg!(feature = "onnx"), &model) {
+        (true, Some(path)) => {
+            let label = format!(
+                "{} (ONNX)",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            let item = CheckMenuItem::new(label, true, onnx_active, None);
+            dsp_menu.append(&item).ok();
+            denoisers.push(DenoiserEntry { item, onnx: true });
+        }
+        // Explain the absence rather than silently offering one option.
+        (true, None) => {
+            dsp_menu
+                .append(&MenuItem::new("(no model.onnx found)", false, None))
+                .ok();
+        }
+        (false, _) => {
+            dsp_menu
+                .append(&MenuItem::new("(built without --features onnx)", false, None))
+                .ok();
+        }
+    }
+    menu.append(&dsp_menu).ok();
     menu.append(&PredefinedMenuItem::separator()).ok();
 
     // Ask the registry rather than trusting the config file: the user may have
@@ -167,6 +213,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         Items {
             enable,
             mics,
+            denoisers,
             auto_start,
             open_logs,
             quit,
@@ -246,6 +293,30 @@ impl App {
             }
         }
         info!(device = %if device_id.is_empty() { "Windows default" } else { &device_id }, "microphone selected");
+        self.restart_pipeline();
+    }
+
+    fn select_denoiser(&mut self, onnx: bool) {
+        {
+            let mut c = self.cfg.write().unwrap();
+            // Remember the model path either way, so flipping back to ONNX
+            // doesn't ask the user to configure it again.
+            if onnx {
+                if let Some(p) = c.available_model() {
+                    c.model_path = p.to_string_lossy().into_owned();
+                }
+            }
+            c.use_onnx = onnx;
+            if let Err(e) = c.save() {
+                warn!(error = %e, "saving config failed");
+            }
+        }
+        if let Some(items) = &self.items {
+            for d in &items.denoisers {
+                d.item.set_checked(d.onnx == onnx);
+            }
+        }
+        info!(onnx, "denoiser selected");
         self.restart_pipeline();
     }
 }
@@ -348,6 +419,8 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
         } else if let Some(device_id) = items.mic_by_id(&id).map(|m| m.device_id.clone()) {
             self.select_mic(device_id);
+        } else if let Some(onnx) = items.denoiser_by_id(&id).map(|d| d.onnx) {
+            self.select_denoiser(onnx);
         }
     }
 
