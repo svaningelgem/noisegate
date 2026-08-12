@@ -6,19 +6,34 @@
 [![Model: RNNoise + ONNX](https://img.shields.io/badge/model-RNNoise%20%2B%20ONNX-purple.svg)](#noise-suppression-model)
 [![Latest release](https://img.shields.io/github/v/release/Yashsomalkar/noisegate?include_prereleases&label=download)](https://github.com/Yashsomalkar/noisegate/releases)
 
-Real-time microphone noise cancellation for Windows. Pure-Rust inference, WASAPI low-latency capture/render, system-tray UI. Pipes cleaned audio into VB-Cable so any app (Zoom, Teams, Discord, OBS, browser calls) sees a noise-free mic.
+**Keeps your voice on the call and leaves the rest of the room behind.** Real-time microphone processing for Windows that removes the people talking *around* you — a child in the next room, a partner on a phone call, an office two desks away — not just fans and keyboard clatter. Pure-Rust, WASAPI low-latency capture/render, system-tray UI. Cleaned audio goes into a virtual cable so Zoom, Teams, Discord, OBS or a browser call just sees a quiet microphone.
 
-> Status: pre-alpha scaffold. Builds on Windows 10/11 with the MSVC toolchain. Tested on (none yet — you're the first).
+> Status: pre-alpha. Builds on Windows 10/11 with the MSVC toolchain.
 
-## Why
+## Why this and not the others
 
-Existing noise-cancellation tools either cost money (Krisp), require an RTX GPU (NVIDIA Broadcast), or are Linux-only (NoiseTorch). NoiseGate is a free, open-source, lightweight alternative for Windows that runs on any CPU, with a swappable model so you can opt into a state-of-the-art network when you want one.
+Ordinary noise suppression solves the easy half of the problem. Fans, hum and typing are *stationary* noise, and everything removes those — Windows does some of it for free. What almost nothing removes is **other people's voices**, because every speech-enhancement model is trained to *preserve* speech, and your neighbour is speech.
+
+That turns out to be measurable. Same 60-second recording — one person talking at the microphone, a child talking loudly across the room — through four backends. The middle of the level distribution is where background speech lives; the top is the near voice:
+
+| backend | background speech | your voice |
+|---|---|---|
+| **DeepFilterNet3** | **−19.3 dB** | −0.1 dB |
+| GTCRN | −11.1 dB | −0.9 dB |
+| RNNoise | −6.5 dB | −0.4 dB |
+| MossFormer2 (48 kHz, newer, larger) | −5.5 dB | −0.2 dB |
+
+The newest, largest model came last: it is very good at enhancing speech, so it faithfully preserves the voice you wanted gone. DeepFilterNet3 is the outlier — it discriminates on proximity and reverberation, which is exactly the cue that separates you from the room.
+
+So NoiseGate ships DeepFilterNet3 as its default and treats "surrounding conversation" as the problem worth solving. It's free, open source, runs on any CPU — no Krisp subscription, no RTX card, no Linux.
+
+*(Reproduce it yourself: `noisegate --denoise noisy.wav clean.wav`, which reports these numbers. RNNoise stays available as a low-CPU fallback at ~50× less compute.)*
 
 ## Stack
 
 - **Audio I/O:** WASAPI shared low-latency, event-driven, MMCSS Pro Audio scheduling.
 - **Routing:** VB-Cable (free virtual audio cable, [vb-audio.com](https://vb-audio.com/Cable/)).
-- **DSP model:** **RNNoise** by default (via the [`nnnoiseless`](https://github.com/jneem/nnnoiseless) crate — pure-Rust port). Optional **ONNX** path for newer models like DeepFilterNet3 from Hugging Face.
+- **DSP model:** **DeepFilterNet3** by default via ONNX Runtime. **RNNoise** (the pure-Rust [`nnnoiseless`](https://github.com/jneem/nnnoiseless) port) as a zero-dependency, low-CPU fallback.
 - **UI:** `tray-icon` + `winit` event loop.
 - **Lang:** Rust 2021, single static binary, ~10 MB stripped (RNNoise default), ~25 MB with ONNX runtime.
 
@@ -34,22 +49,31 @@ Three dedicated MMCSS-priority threads. Lock-free SPSC ring buffers (8 frames �
 
 ## Noise suppression model
 
-Two supported backends, both real-time:
+Two backends, both real-time, switchable from the tray while running:
 
-| Backend | Default? | Quality | Install size | How |
+| Backend | Default? | Background speech | CPU | Needs |
 |---|---|---|---|---|
-| **RNNoise** (via `nnnoiseless`) | ✅ | ★★★ Good. Excellent for stationary noise (fans, hum). Older classical-RNN architecture. | +0 MB (model embedded) | Just `cargo build`. |
-| **ONNX (DeepFilterNet3 etc.)** | opt-in (`--features onnx`) | ★★★★★ State of the art. | +15 MB (`onnxruntime.dll`) + ~12 MB model file you supply | Build with `--features onnx`, point config at an ONNX file. See below. |
+| **DeepFilterNet3** (ONNX) | ✅ | −19 dB | ~15% of one core (RTF 0.15) | `onnxruntime.dll` (bundled) + a model file |
+| **RNNoise** (`nnnoiseless`) | fallback | −6.5 dB | ~0.3% of one core (RTF 0.003) | nothing — model embedded |
 
-For most users, RNNoise is what shipping software did until ~2022 and is still good enough for clean voice calls. Step up to ONNX/DFN3 when you have non-stationary noise (kids, traffic, music) and the extra CPU is worth it (typically 3-7%).
+RNNoise is still worth having: it needs no download at all, runs on any architecture Rust targets, and costs ~50× less compute, which matters on an old laptop or on battery. It's genuinely good at fans, hum and hiss. It just can't touch a voice in the next room, because it was trained not to.
+
+NoiseGate falls back to RNNoise on its own if no ONNX model is present, so it always does something useful.
 
 ## Install
 
-### Option A — Download a prebuilt `.exe` (easiest, once releases are cut)
+### Option A — Run the installer (recommended)
 
-Grab the latest binary from the **[Releases page](https://github.com/Yashsomalkar/noisegate/releases)**, then jump to [Set up audio routing](#set-up-audio-routing) below.
+Grab `NoiseGate-x.y.z-setup.exe` from the **[Releases page](https://github.com/Yashsomalkar/noisegate/releases)** and run it. It installs per-user, so there's no administrator prompt, and it offers to start NoiseGate when you sign in.
 
-> No releases yet? Build from source (Option B). A GitHub Actions workflow will start producing prebuilt binaries on every tagged release.
+The installer includes the ONNX Runtime it needs. On first run NoiseGate will tell you if a virtual audio cable is missing and offer to open the download page — see [Install a virtual audio cable](#install-a-virtual-audio-cable).
+
+Building the installer yourself:
+
+```powershell
+cargo build --release --features onnx
+ISCC.exe installer\noisegate.iss     # Inno Setup 6
+```
 
 ### Option B — Build from source
 

@@ -6,3 +6,5 @@
 .vscode/
 .idea/
 *.log
+# Built installers.
+/dist/
