@@ -12,7 +12,9 @@ use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::HeapRb;
 use tracing::{info, warn};
 
-use audio_io::{devices::DeviceList, wasapi_capture::Frame};
+use audio_io::devices::DeviceList;
+use audio_io::wasapi_capture::{Frame, FrameSink};
+use audio_io::wasapi_render::FrameSource;
 use dsp::{DenoiserHost, Stats};
 
 use crate::config::Config;
@@ -20,12 +22,42 @@ use crate::parking_lot_compat::RwLock;
 
 const RING_FRAMES: usize = 8;
 
+/// Where the pipeline gets and puts its audio.
+///
+/// Production is WASAPI. Tests substitute a fake so the whole ring-buffer,
+/// DSP-thread and shutdown path can run with no sound card present — which is
+/// the only way it gets exercised on CI, and the only way to make a device
+/// "disappear" on demand to test the stall handling.
+///
+/// The handles come back boxed because the pipeline only holds them to keep
+/// the audio threads alive; dropping them stops the audio. Boxing keeps the
+/// generics from leaking into every caller of `Pipeline`.
+pub trait AudioIo {
+    fn start_capture(&self, device_id: &str, sink: Box<dyn FrameSink>) -> Result<Box<dyn Send>>;
+    fn start_render(&self, device_id: &str, source: Box<dyn FrameSource>) -> Result<Box<dyn Send>>;
+}
+
+/// The real thing.
+pub struct Wasapi;
+
+impl AudioIo for Wasapi {
+    fn start_capture(&self, device_id: &str, sink: Box<dyn FrameSink>) -> Result<Box<dyn Send>> {
+        let c = audio_io::WasapiCapture::start(device_id, sink).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(Box::new(c))
+    }
+
+    fn start_render(&self, device_id: &str, source: Box<dyn FrameSource>) -> Result<Box<dyn Send>> {
+        let r = audio_io::WasapiRender::start(device_id, source).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(Box::new(r))
+    }
+}
+
 pub struct Pipeline {
     /// Held to keep the audio threads alive. Dropping these stops them.
     #[allow(dead_code)]
-    capture: audio_io::WasapiCapture,
+    capture: Box<dyn Send>,
     #[allow(dead_code)]
-    render: audio_io::WasapiRender,
+    render: Box<dyn Send>,
     #[allow(dead_code)]
     dsp_thread: Option<std::thread::JoinHandle<()>>,
 
@@ -37,27 +69,34 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// Start against the real sound card.
     pub fn start(cfg: Arc<RwLock<Config>>) -> Result<Self> {
-        let snapshot = cfg.read().unwrap().clone();
+        let (input_id, output_id) = Self::resolve_devices(&cfg.read().unwrap())?;
+        Self::build(&Wasapi, cfg, &input_id, &output_id)
+    }
 
-        // Resolve devices.
+    /// Pick the devices to use. Split out from [`Pipeline::build`] because it
+    /// is the only part that needs a real sound card, which keeps the wiring
+    /// testable.
+    fn resolve_devices(snapshot: &Config) -> Result<(String, String)> {
         let devices = DeviceList::enumerate().context("enumerating audio devices")?;
         // Config names devices; ids are an internal detail resolved here,
         // fresh on every start and every restart.
         let input = devices
-            .resolve_capture(&snapshot.input_device)
-            .ok_or_else(|| {
-                if snapshot.input_device.is_empty() {
-                    anyhow::anyhow!("no microphone is available")
-                } else {
-                    anyhow::anyhow!(
-                        "microphone {:?} is not available (unplugged?). \
-                         Pick one from the tray menu",
-                        snapshot.input_device
-                    )
-                }
-            })?
+            .resolve_capture_ranked(&snapshot.microphones)
+            .ok_or_else(|| anyhow::anyhow!("no microphone is available"))?
             .clone();
+        // Say so when the preferred one wasn't there, so a silent downgrade to
+        // the laptop's built-in mic isn't a mystery later.
+        if let Some(preferred) = snapshot.microphones.first() {
+            if !audio_io::devices::same_device_name(preferred, &input.friendly_name) {
+                warn!(
+                    using = %input.friendly_name,
+                    preferred = %preferred,
+                    "preferred microphone unavailable; using the next one down"
+                );
+            }
+        }
 
         // Installing a virtual cable usually makes it the default *capture*
         // device too. Left alone, "follow the Windows default" then means
@@ -88,6 +127,18 @@ impl Pipeline {
             .clone();
         let (input_id, output_id) = (input.id.clone(), output.id.clone());
         info!(mic = %input.friendly_name, to = %output.friendly_name, "using devices");
+        Ok((input_id, output_id))
+    }
+
+    /// Wire capture -> ring -> DSP -> ring -> render, against whatever audio
+    /// backend is handed in.
+    fn build(
+        io: &dyn AudioIo,
+        cfg: Arc<RwLock<Config>>,
+        input_id: &str,
+        output_id: &str,
+    ) -> Result<Self> {
+        let snapshot = cfg.read().unwrap().clone();
 
         // Build the rings.
         let (prod_a, mut cons_a) = HeapRb::<Frame>::new(RING_FRAMES).split();
@@ -172,8 +223,7 @@ impl Pipeline {
             }
         }
 
-        let capture = audio_io::WasapiCapture::start(&input_id, Box::new(Sink { prod: prod_a }))
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let capture = io.start_capture(input_id, Box::new(Sink { prod: prod_a }))?;
 
         // Render source: pulls from ring B.
         struct Source<C: Consumer<Item = Frame> + Send> {
@@ -192,14 +242,13 @@ impl Pipeline {
             }
         }
 
-        let render = audio_io::WasapiRender::start(
-            &output_id,
+        let render = io.start_render(
+            output_id,
             Box::new(Source {
                 cons: cons_b,
                 last_underrun_log: std::time::Instant::now() - std::time::Duration::from_secs(60),
             }),
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
+        )?;
 
         Ok(Self {
             capture,
@@ -243,5 +292,202 @@ impl Drop for Pipeline {
         if let Some(t) = self.dsp_thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A sound card that isn't one.
+    ///
+    /// Capture replays a fixed signal at full speed and then stops delivering,
+    /// which is also how a real device behaves when it's unplugged — so the
+    /// same fake exercises both the happy path and the stall.
+    struct FakeIo {
+        input: Vec<Frame>,
+        rendered: Arc<Mutex<Vec<Frame>>>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl FakeIo {
+        fn new(input: Vec<Frame>) -> Self {
+            Self {
+                input,
+                rendered: Arc::new(Mutex::new(Vec::new())),
+                stop: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+
+    struct FakeHandle(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+
+    impl Drop for FakeHandle {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+            if let Some(t) = self.1.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    impl AudioIo for FakeIo {
+        fn start_capture(&self, _id: &str, mut sink: Box<dyn FrameSink>) -> Result<Box<dyn Send>> {
+            let frames = self.input.clone();
+            let stop = self.stop.clone();
+            let t = std::thread::spawn(move || {
+                for f in frames {
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    sink.on_frame(&f);
+                    // Roughly real time so the ring doesn't overflow; the DSP
+                    // thread consumes at its own pace.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                // Then nothing more, like a device that vanished.
+                while !stop.load(Ordering::Acquire) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+            Ok(Box::new(FakeHandle(self.stop.clone(), Some(t))))
+        }
+
+        fn start_render(
+            &self,
+            _id: &str,
+            mut source: Box<dyn FrameSource>,
+        ) -> Result<Box<dyn Send>> {
+            let out = self.rendered.clone();
+            let stop = self.stop.clone();
+            let t = std::thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    match source.next_frame() {
+                        Some(f) => out.lock().unwrap().push(f),
+                        None => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    }
+                }
+            });
+            Ok(Box::new(FakeHandle(self.stop.clone(), Some(t))))
+        }
+    }
+
+    /// Deterministic tone plus hiss. Generated rather than checked in: no
+    /// binary in git, no licence to honour, and identical on every machine.
+    fn test_signal(frames: usize) -> Vec<Frame> {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        (0..frames)
+            .map(|i| {
+                let mut f = [0.0f32; dsp::FRAME_SAMPLES];
+                for (j, s) in f.iter_mut().enumerate() {
+                    let t = (i * dsp::FRAME_SAMPLES + j) as f32 / 48_000.0;
+                    // xorshift, so the "noise" is reproducible.
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    let hiss = (seed >> 40) as f32 / 8_388_608.0 - 1.0;
+                    *s = (t * 220.0 * std::f32::consts::TAU).sin() * 0.25 + hiss * 0.02;
+                }
+                f
+            })
+            .collect()
+    }
+
+    fn config(enabled: bool) -> Arc<RwLock<Config>> {
+        Arc::new(RwLock::new(Config {
+            enabled,
+            ..Config::default()
+        }))
+    }
+
+    fn run(io: &FakeIo, cfg: Arc<RwLock<Config>>, settle: Duration) -> Vec<Frame> {
+        let p = Pipeline::build(io, cfg, "in", "out").expect("pipeline should build");
+        std::thread::sleep(settle);
+        let out = io.rendered.lock().unwrap().clone();
+        drop(p);
+        out
+    }
+
+    use std::time::Duration;
+
+    #[test]
+    fn audio_flows_from_capture_through_to_render() {
+        let io = FakeIo::new(test_signal(40));
+        let out = run(&io, config(true), Duration::from_millis(400));
+        assert!(!out.is_empty(), "nothing reached the render side");
+    }
+
+    /// Bypass must be a true passthrough, not "denoising turned down". This is
+    /// the assertion a real recording could not make any more strongly.
+    #[test]
+    fn bypass_passes_audio_through_bit_exactly() {
+        let input = test_signal(30);
+        let io = FakeIo::new(input.clone());
+        let out = run(&io, config(false), Duration::from_millis(400));
+
+        assert!(!out.is_empty());
+        for (i, frame) in out.iter().enumerate() {
+            assert_eq!(
+                frame.as_slice(),
+                input[i].as_slice(),
+                "frame {i} was altered while bypassed"
+            );
+        }
+    }
+
+    #[test]
+    fn enabling_the_denoiser_changes_the_audio() {
+        let input = test_signal(30);
+        let processed = run(
+            &FakeIo::new(input.clone()),
+            config(true),
+            Duration::from_millis(400),
+        );
+        assert!(!processed.is_empty());
+        let any_different = processed
+            .iter()
+            .enumerate()
+            .any(|(i, f)| f.as_slice() != input[i].as_slice());
+        assert!(any_different, "denoiser left the signal untouched");
+    }
+
+    #[test]
+    fn frames_processed_counts_what_went_through() {
+        let io = FakeIo::new(test_signal(25));
+        let p = Pipeline::build(&io, config(true), "in", "out").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        let n = p.frames_processed();
+        assert!(n > 0, "frame counter never advanced");
+        assert!(n <= 25, "counted more frames than were fed: {n}");
+    }
+
+    /// The watchdog's signal: a device that stops delivering must stop
+    /// advancing the counter, while one that is merely quiet keeps going.
+    #[test]
+    fn the_frame_counter_stops_when_capture_stops_delivering() {
+        let io = FakeIo::new(test_signal(10)); // then silence forever
+        let p = Pipeline::build(&io, config(true), "in", "out").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let first = p.frames_processed();
+        std::thread::sleep(Duration::from_millis(300));
+        let second = p.frames_processed();
+        assert!(first > 0, "should have processed the frames it was given");
+        assert_eq!(first, second, "counter advanced after capture went silent");
+    }
+
+    #[test]
+    fn dropping_the_pipeline_stops_its_threads() {
+        let io = FakeIo::new(test_signal(200));
+        let p = Pipeline::build(&io, config(true), "in", "out").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        drop(p); // joins the DSP thread; the fake handles join theirs
+        let settled = io.rendered.lock().unwrap().len();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            settled,
+            io.rendered.lock().unwrap().len(),
+            "frames kept arriving after the pipeline was dropped"
+        );
     }
 }

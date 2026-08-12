@@ -18,7 +18,7 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **29%**, which is the level
+CI enforces a **minimum** line coverage, currently **38%**, which is the level
 already reached. A pull request may raise that number; it must never lower it.
 When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` in the same PR.
@@ -30,19 +30,21 @@ When coverage improves, bump `--fail-under-lines` in
 | `devices.rs` | 89% | pure logic — device matching, priority, cable detection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
 | `format.rs` | 76% | mix-format validation is pure |
+| `pipeline.rs` | 73% | driven through a fake audio backend; only the WASAPI wiring is left |
 | `tray.rs` | 26% | labels and icons are testable; the event loop is not |
 | `wasapi_capture.rs` | 0% | needs a real microphone and the audio engine |
 | `wasapi_render.rs` | 0% | needs a real endpoint |
-| `pipeline.rs` | 0% | starts three threads against live devices |
 | `dsp/onnx.rs` | 0% | needs `onnxruntime.dll` and a model file |
 | `mmcss.rs` | 0% | asks the OS scheduler for Pro Audio priority |
 
 The uncovered majority is not untested-because-lazy; it is code whose entire
 job is talking to Windows. Reaching 100% needs one of:
 
-1. **A hardware abstraction** — put a trait in front of WASAPI so the capture
-   and render loops can run against a fake device in tests. This is the real
-   answer, and it is a substantial refactor of `audio-io`.
+1. **More hardware abstraction.** `Pipeline` already takes an `AudioIo` trait,
+   so the ring buffers, DSP thread, bypass and shutdown paths are all tested
+   against a fake device. The same treatment for `wasapi_capture`/
+   `wasapi_render` internals is the remaining chunk, and a larger one — those
+   modules are mostly `unsafe` COM calls with little logic to separate out.
 2. **Loopback tests on a machine with a virtual cable** — CI runners have no
    audio devices at all, so these could only run locally or on a self-hosted
    runner.
