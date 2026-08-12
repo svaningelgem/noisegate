@@ -1349,6 +1349,7 @@ dependencies = [
  "anyhow",
  "nnnoiseless",
  "ort",
+ "realfft",
  "thiserror 1.0.69",
  "tracing",
 ]

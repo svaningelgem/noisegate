@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'V[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      # Needed to create the release and upload assets.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}   # e.g. v1.2.3
+          VERSION=${VERSION#v}
+          VERSION=${VERSION#V}
+          echo "Releasing $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp the version into Cargo.toml
+        shell: bash
+        run: |
+          # Workspace package version — the crates inherit it.
+          sed -i -E "0,/^version = \".*\"/s//version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
+          grep -m1 '^version' Cargo.toml
+          cargo update -w   # refresh the lockfile for the new version
+
+      # The same gates as CI. A tag should never publish something that
+      # wouldn't have passed a pull request.
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        if: always()
+        run: cargo clippy --all-targets --all-features
+
+      - name: Test
+        if: always()
+        run: cargo test --all-features
+
+      - name: Coverage
+        if: always()
+        run: cargo llvm-cov --all-features --fail-under-lines 38
+
+      - name: Build
+        run: cargo build --release --all-features
+
+      - name: Fetch ONNX Runtime
+        shell: bash
+        run: |
+          # MIT licensed and redistributable, so it ships inside the installer.
+          # Pinned: ort 2.0.0-rc.10 speaks ONNX Runtime API version 22 = 1.22.x.
+          curl -sSfL -o ort.zip \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip
+          unzip -q ort.zip
+          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/release/
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\noisegate.iss
+
+      - name: Package the portable build
+        shell: bash
+        run: |
+          mkdir -p dist/portable
+          cp target/release/noisegate.exe target/release/onnxruntime.dll \
+             README.md LICENSE-MIT LICENSE-APACHE dist/portable/
+          cd dist/portable
+          7z a "../NoiseGate-${{ steps.version.outputs.version }}-portable.zip" .
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.exe *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: NoiseGate ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            dist/NoiseGate-${{ steps.version.outputs.version }}-setup.exe
+            dist/NoiseGate-${{ steps.version.outputs.version }}-portable.zip
+            dist/SHA256SUMS.txt
+          body: |
+            ## Install
+
+            Download **NoiseGate-${{ steps.version.outputs.version }}-setup.exe** and run it.
+            It installs per-user, so there is no administrator prompt.
+
+            NoiseGate also needs a virtual audio cable so other apps can hear the
+            cleaned microphone — it will explain this on first run and offer to
+            open the download page.
+
+            The portable zip is the same binary without an installer; unzip and run
+            `noisegate.exe`.
+
+            Verify your download against `SHA256SUMS.txt`.
+
+            > These binaries are not code-signed, so SmartScreen will warn on first
+            > run. Choose "More info" then "Run anyway", or verify the checksum above.

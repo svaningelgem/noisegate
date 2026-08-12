@@ -9,7 +9,11 @@
 ; Expects cargo build --release --features onnx to have run first.
 
 #define AppName        "NoiseGate"
-#define AppVersion     "0.1.0"
+; Overridable from the command line so CI can stamp the tag:
+;   ISCC.exe /DAppVersion=1.2.3 installer\noisegate.iss
+#ifndef AppVersion
+  #define AppVersion   "0.1.0"
+#endif
 #define AppPublisher   "NoiseGate contributors"
 #define AppURL         "https://github.com/Yashsomalkar/noisegate"
 #define AppExe         "noisegate.exe"

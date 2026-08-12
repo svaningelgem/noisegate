@@ -94,6 +94,8 @@ impl DenoiserHost {
     }
 }
 
+pub mod dfn_frontend;
+
 #[cfg(feature = "onnx")]
 mod onnx;
 #[cfg(feature = "rnnoise")]
