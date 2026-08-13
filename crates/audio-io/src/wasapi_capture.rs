@@ -183,123 +183,175 @@ fn capture_loop(
         // Init succeeded — unblock the caller.
         let _ = ready_tx.send(Ok(()));
 
-        let mut accumulator = FrameAccumulator::new();
-        let mut converter = if needs_convert {
-            Some(InlineConverter::new(
-                device_rate,
-                device_channels,
-                SAMPLE_RATE,
-            ))
-        } else {
-            None
+        let mut engine = WasapiEngine {
+            client: cap_client,
+            event,
+            channels: device_channels,
         };
-
-        let start_time = std::time::Instant::now();
-        // Reused when the engine hands us a buffer flagged silent; see below.
-        let mut silence: Vec<f32> = Vec::new();
-        let mut got_first_buffer = false;
-        let mut last_silence_warn = std::time::Instant::now();
-        let mut wait_count = 0u64;
-        let mut timeout_count = 0u64;
-
-        while !stop.load(Ordering::Acquire) {
-            let wait = WaitForSingleObject(event, 200 /* ms */);
-            wait_count += 1;
-            if wait != WAIT_OBJECT_0 {
-                timeout_count += 1;
-                tracing::trace!(
-                    wait_result = wait.0,
-                    waits = wait_count,
-                    timeouts = timeout_count,
-                    "capture event timeout"
-                );
-                // Timeout. If we've never seen a buffer and >2s have passed,
-                // that's almost certainly a Microphone-Privacy block in
-                // Windows Settings. Tell the user once every ~5s.
-                if !got_first_buffer
-                    && start_time.elapsed() > std::time::Duration::from_secs(2)
-                    && last_silence_warn.elapsed() > std::time::Duration::from_secs(5)
-                {
-                    tracing::error!(
-                        "no audio from device after {:?}. \
-                         Most common cause: Windows Settings → Privacy & Security → \
-                         Microphone is OFF for this app. Also check that \
-                         'Let desktop apps access your microphone' is ON, \
-                         and that the mic isn't hardware-muted.",
-                        start_time.elapsed()
-                    );
-                    last_silence_warn = std::time::Instant::now();
-                }
-                continue;
-            }
-            tracing::trace!(waits = wait_count, "capture event signaled");
-
-            // Drain everything the engine has for us this tick.
-            loop {
-                let mut buffer_ptr: *mut u8 = std::ptr::null_mut();
-                let mut frames_avail: u32 = 0;
-                let mut flags: u32 = 0;
-                let r = cap_client.GetBuffer(
-                    &mut buffer_ptr,
-                    &mut frames_avail,
-                    &mut flags,
-                    None,
-                    None,
-                );
-                if let Err(e) = r {
-                    // AUDCLNT_S_BUFFER_EMPTY is informational, not an error.
-                    if e.code() == windows::Win32::Media::Audio::AUDCLNT_S_BUFFER_EMPTY {
-                        tracing::trace!("GetBuffer: AUDCLNT_S_BUFFER_EMPTY");
-                        break;
-                    }
-                    return Err(AudioError::wasapi("GetBuffer", e));
-                }
-                tracing::trace!(frames_avail, flags, "GetBuffer returned");
-                if frames_avail == 0 {
-                    let _ = cap_client.ReleaseBuffer(0);
-                    break;
-                }
-
-                if !got_first_buffer {
-                    tracing::info!(
-                        frames = frames_avail,
-                        elapsed_ms = start_time.elapsed().as_millis() as u64,
-                        "first capture buffer received — audio is flowing"
-                    );
-                    got_first_buffer = true;
-                }
-
-                let status = BufferStatus::from_flags(flags);
-                if status.glitch {
-                    sink.on_glitch(flags);
-                }
-
-                // The buffer matches the device's mix format, which we
-                // validated as 32-bit float above, so `sample_count` f32s is
-                // exactly what the engine allocated.
-                let sample_count = frames_avail as usize * device_channels;
-                let raw: &[f32] = if status.silent {
-                    silence.resize(sample_count, 0.0);
-                    &silence[..sample_count]
-                } else {
-                    std::slice::from_raw_parts(buffer_ptr as *const f32, sample_count)
-                };
-
-                let mono_48k: &[f32] = match converter.as_mut() {
-                    None => raw,
-                    Some(c) => c.process(raw, frames_avail as usize),
-                };
-
-                accumulator.feed(mono_48k, |frame| sink.on_frame(frame));
-
-                cap_client
-                    .ReleaseBuffer(frames_avail)
-                    .map_err(|e| AudioError::wasapi("ReleaseBuffer", e))?;
-            }
-        }
+        let result = pump(
+            &mut engine,
+            device_channels,
+            needs_convert.then_some(device_rate),
+            sink,
+            stop,
+        );
 
         let _ = client.Stop();
-        Ok(())
+        result
+    }
+}
+
+/// The audio engine as the capture pump uses it.
+///
+/// This exists so the pump can be driven by a script. Every failure this
+/// module has actually met in the wild is a sequence of these calls: a device
+/// invalidated mid-stream, a buffer flagged silent, an engine that signals and
+/// then has nothing, an event that never fires at all. None of them can be
+/// reproduced on demand against real hardware, and all of them can be written
+/// down here — so when the next one turns up it can be encoded rather than
+/// described in a comment.
+pub(crate) trait CaptureEngine {
+    /// Wait for the engine's buffer-ready event. `false` on timeout.
+    fn wait(&mut self, timeout: std::time::Duration) -> bool;
+
+    /// Hand the next available buffer to `consume` as (interleaved samples,
+    /// flags), then release it back to the engine. `false` means the engine
+    /// has nothing more for this tick.
+    ///
+    /// Pairing GetBuffer with ReleaseBuffer is the implementation's job: doing
+    /// it here rather than in the pump means an early return in the caller
+    /// cannot leak a buffer and wedge the stream.
+    fn next_buffer(&mut self, consume: &mut dyn FnMut(&[f32], u32)) -> Result<bool>;
+}
+
+/// How long to block on the buffer-ready event before looking at `stop`.
+const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Drain the engine into 480-sample mono frames until asked to stop.
+///
+/// `resample_from` is the device's rate when it needs converting, `None` when
+/// the device already produces mono 48 kHz.
+pub(crate) fn pump(
+    engine: &mut dyn CaptureEngine,
+    channels: usize,
+    resample_from: Option<u32>,
+    sink: &mut dyn FrameSink,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let mut accumulator = FrameAccumulator::new();
+    let mut converter = resample_from.map(|rate| InlineConverter::new(rate, channels, SAMPLE_RATE));
+
+    let start_time = std::time::Instant::now();
+    // Reused when the engine hands us a buffer flagged silent.
+    let mut silence: Vec<f32> = Vec::new();
+    let mut got_first_buffer = false;
+    let mut last_silence_warn = std::time::Instant::now();
+
+    while !stop.load(Ordering::Acquire) {
+        if !engine.wait(WAIT_TIMEOUT) {
+            // If we have never seen a buffer and a couple of seconds have
+            // passed, this is almost certainly a Microphone-Privacy block in
+            // Windows Settings rather than a quiet room. Say so every ~5s.
+            if !got_first_buffer
+                && start_time.elapsed() > std::time::Duration::from_secs(2)
+                && last_silence_warn.elapsed() > std::time::Duration::from_secs(5)
+            {
+                tracing::error!(
+                    "no audio from device after {:?}. \
+                     Most common cause: Windows Settings → Privacy & Security → \
+                     Microphone is OFF for this app. Also check that \
+                     'Let desktop apps access your microphone' is ON, \
+                     and that the mic isn't hardware-muted.",
+                    start_time.elapsed()
+                );
+                last_silence_warn = std::time::Instant::now();
+            }
+            continue;
+        }
+
+        // Drain everything the engine has for us this tick.
+        while engine.next_buffer(&mut |raw, flags| {
+            if !got_first_buffer {
+                tracing::info!(
+                    samples = raw.len(),
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    "first capture buffer received — audio is flowing"
+                );
+                got_first_buffer = true;
+            }
+
+            let status = BufferStatus::from_flags(flags);
+            if status.glitch {
+                sink.on_glitch(flags);
+            }
+
+            let samples: &[f32] = if status.silent {
+                // Undefined contents; substitute real silence rather than
+                // forwarding whatever was in that mapping.
+                silence.clear();
+                silence.resize(raw.len(), 0.0);
+                &silence
+            } else {
+                raw
+            };
+
+            let frames = samples.len() / channels.max(1);
+            let mono_48k: &[f32] = match converter.as_mut() {
+                None => samples,
+                Some(c) => c.process(samples, frames),
+            };
+            accumulator.feed(mono_48k, |frame| sink.on_frame(frame));
+        })? {}
+    }
+    Ok(())
+}
+
+/// The real engine: an `IAudioCaptureClient` and the event it signals.
+struct WasapiEngine {
+    client: IAudioCaptureClient,
+    event: windows::Win32::Foundation::HANDLE,
+    channels: usize,
+}
+
+impl CaptureEngine for WasapiEngine {
+    fn wait(&mut self, timeout: std::time::Duration) -> bool {
+        unsafe { WaitForSingleObject(self.event, timeout.as_millis() as u32) == WAIT_OBJECT_0 }
+    }
+
+    fn next_buffer(&mut self, consume: &mut dyn FnMut(&[f32], u32)) -> Result<bool> {
+        unsafe {
+            let mut buffer_ptr: *mut u8 = std::ptr::null_mut();
+            let mut frames_avail: u32 = 0;
+            let mut flags: u32 = 0;
+            if let Err(e) =
+                self.client
+                    .GetBuffer(&mut buffer_ptr, &mut frames_avail, &mut flags, None, None)
+            {
+                // AUDCLNT_S_BUFFER_EMPTY is informational, not an error.
+                if e.code() == windows::Win32::Media::Audio::AUDCLNT_S_BUFFER_EMPTY {
+                    return Ok(false);
+                }
+                return Err(AudioError::wasapi("GetBuffer", e));
+            }
+            if frames_avail == 0 {
+                let _ = self.client.ReleaseBuffer(0);
+                return Ok(false);
+            }
+
+            // The buffer matches the device's mix format, which was validated
+            // as 32-bit float before Initialize, so this many f32s is exactly
+            // what the engine allocated.
+            let samples = std::slice::from_raw_parts(
+                buffer_ptr as *const f32,
+                frames_avail as usize * self.channels,
+            );
+            consume(samples, flags);
+
+            self.client
+                .ReleaseBuffer(frames_avail)
+                .map_err(|e| AudioError::wasapi("ReleaseBuffer", e))?;
+            Ok(true)
+        }
     }
 }
 
@@ -510,6 +562,294 @@ impl InlineConverter {
             self.last_sample = s;
         }
         &self.out
+    }
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use super::*;
+
+    /// One thing the engine does when the pump asks. A test is a list of
+    /// these, which is the point of the whole abstraction: a bug report that
+    /// says "my mic dies when I unplug the dock" becomes `Invalidated` in a
+    /// sequence rather than a hardware reproduction someone has to own.
+    enum Tick {
+        /// The event fired and these buffers are available, each with flags.
+        Buffers(Vec<(Vec<f32>, u32)>),
+        /// The event did not fire within the timeout.
+        Timeout,
+        /// The engine signalled but has nothing — a real and common case.
+        SignalledButEmpty,
+        /// The endpoint went away underneath us.
+        Invalidated,
+    }
+
+    struct ScriptedEngine {
+        ticks: std::collections::VecDeque<Tick>,
+        /// Set once the script runs out, so the pump is asked to stop.
+        exhausted: Arc<AtomicBool>,
+        released: usize,
+    }
+
+    impl ScriptedEngine {
+        fn new(ticks: Vec<Tick>, stop: Arc<AtomicBool>) -> Self {
+            Self {
+                ticks: ticks.into(),
+                exhausted: stop,
+                released: 0,
+            }
+        }
+    }
+
+    impl CaptureEngine for ScriptedEngine {
+        fn wait(&mut self, _timeout: std::time::Duration) -> bool {
+            match self.ticks.front() {
+                None => {
+                    // Script over: let the pump's loop condition end it.
+                    self.exhausted.store(true, Ordering::Release);
+                    false
+                }
+                Some(Tick::Timeout) => {
+                    self.ticks.pop_front();
+                    false
+                }
+                Some(_) => true,
+            }
+        }
+
+        fn next_buffer(&mut self, consume: &mut dyn FnMut(&[f32], u32)) -> Result<bool> {
+            match self.ticks.front_mut() {
+                Some(Tick::Buffers(queue)) if !queue.is_empty() => {
+                    let (samples, flags) = queue.remove(0);
+                    consume(&samples, flags);
+                    self.released += 1;
+                    Ok(true)
+                }
+                Some(Tick::Buffers(_)) | Some(Tick::SignalledButEmpty) => {
+                    self.ticks.pop_front();
+                    Ok(false)
+                }
+                Some(Tick::Invalidated) => Err(AudioError::DeviceInvalidated {
+                    context: "GetBuffer",
+                }),
+                _ => Ok(false),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        frames: Vec<Frame>,
+        glitches: Vec<u32>,
+    }
+
+    impl FrameSink for Recorder {
+        fn on_frame(&mut self, frame: &Frame) {
+            self.frames.push(*frame);
+        }
+        fn on_glitch(&mut self, flags: u32) {
+            self.glitches.push(flags);
+        }
+    }
+
+    /// Run a script through the pump and report what the sink saw.
+    fn run(
+        ticks: Vec<Tick>,
+        channels: usize,
+        resample_from: Option<u32>,
+    ) -> (Recorder, Result<()>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut engine = ScriptedEngine::new(ticks, stop.clone());
+        let mut sink = Recorder::default();
+        let result = pump(&mut engine, channels, resample_from, &mut sink, &stop);
+        (sink, result)
+    }
+
+    fn buffer(samples: usize, value: f32) -> (Vec<f32>, u32) {
+        (vec![value; samples], 0)
+    }
+
+    #[test]
+    fn audio_flows_from_the_engine_into_whole_frames() {
+        let (sink, result) = run(
+            vec![Tick::Buffers(vec![
+                buffer(FRAME_SAMPLES, 0.5),
+                buffer(FRAME_SAMPLES, 0.25),
+            ])],
+            1,
+            None,
+        );
+        assert!(result.is_ok());
+        assert_eq!(sink.frames.len(), 2);
+        assert!(sink.frames[0].iter().all(|&s| s == 0.5));
+        assert!(sink.frames[1].iter().all(|&s| s == 0.25));
+    }
+
+    /// The engine hands over whatever it has, which is rarely a multiple of
+    /// 480. Frames must still come out whole and in order.
+    #[test]
+    fn ragged_buffers_are_reassembled_into_frames() {
+        let (sink, _) = run(
+            vec![
+                Tick::Buffers(vec![buffer(100, 0.1), buffer(200, 0.1)]),
+                Tick::Buffers(vec![buffer(180, 0.1), buffer(700, 0.2)]),
+            ],
+            1,
+            None,
+        );
+        // 1180 samples in = 2 whole frames, 220 held back.
+        assert_eq!(sink.frames.len(), 2);
+    }
+
+    /// The regression this abstraction was built for. A silent-flagged buffer
+    /// holds undefined memory; forwarding it would push whatever was in that
+    /// mapping out to the render endpoint — someone else's audio, or worse.
+    #[test]
+    fn a_silent_flagged_buffer_never_reaches_the_sink() {
+        const JUNK: f32 = 0.987;
+        let silent_flag = AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
+
+        let (sink, _) = run(
+            vec![Tick::Buffers(vec![(
+                vec![JUNK; FRAME_SAMPLES],
+                silent_flag,
+            )])],
+            1,
+            None,
+        );
+
+        assert_eq!(sink.frames.len(), 1);
+        assert!(
+            sink.frames[0].iter().all(|&s| s == 0.0),
+            "undefined buffer contents were forwarded as audio: {}",
+            sink.frames[0][0]
+        );
+        assert_eq!(sink.glitches, vec![silent_flag], "and it is reported");
+    }
+
+    /// A dropout is worth reporting, but the samples are real. Blanking them
+    /// would turn every glitch into a hole in the audio.
+    #[test]
+    fn a_discontinuity_is_reported_but_the_audio_is_kept() {
+        let flag = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+        let (sink, _) = run(
+            vec![Tick::Buffers(vec![(vec![0.75; FRAME_SAMPLES], flag)])],
+            1,
+            None,
+        );
+        assert_eq!(sink.glitches, vec![flag]);
+        assert!(
+            sink.frames[0].iter().all(|&s| s == 0.75),
+            "real audio was discarded along with the glitch report"
+        );
+    }
+
+    /// An engine that signals and then has nothing is normal, not an error.
+    #[test]
+    fn signalling_with_nothing_available_is_not_a_failure() {
+        let (sink, result) = run(
+            vec![
+                Tick::SignalledButEmpty,
+                Tick::Buffers(vec![buffer(FRAME_SAMPLES, 0.3)]),
+            ],
+            1,
+            None,
+        );
+        assert!(result.is_ok());
+        assert_eq!(sink.frames.len(), 1, "the next tick must still be served");
+    }
+
+    /// Timeouts are how a blocked microphone presents: the event simply never
+    /// fires. The pump must keep waiting rather than treating it as an error.
+    #[test]
+    fn timeouts_do_not_end_the_stream() {
+        let (sink, result) = run(
+            vec![
+                Tick::Timeout,
+                Tick::Timeout,
+                Tick::Buffers(vec![buffer(FRAME_SAMPLES, 0.6)]),
+            ],
+            1,
+            None,
+        );
+        assert!(result.is_ok());
+        assert_eq!(sink.frames.len(), 1, "audio after the timeouts was lost");
+    }
+
+    /// The failure that started all of this: a device that disappears reports
+    /// through the error channel, and must surface as the recoverable variant
+    /// so the watchdog reopens it instead of giving up.
+    #[test]
+    fn a_device_that_disappears_surfaces_as_recoverable() {
+        let (_, result) = run(
+            vec![
+                Tick::Buffers(vec![buffer(FRAME_SAMPLES, 0.1)]),
+                Tick::Invalidated,
+            ],
+            1,
+            None,
+        );
+        let err = result.expect_err("the pump must not swallow this");
+        assert!(
+            err.is_recoverable(),
+            "{err} should be retried with a freshly resolved device"
+        );
+    }
+
+    /// A stereo device at 44.1 kHz — the two conversions the pump wires up —
+    /// still produces mono 48 kHz frames.
+    #[test]
+    fn a_stereo_forty_four_one_device_still_yields_mono_forty_eight() {
+        // 441 stereo frames = 10 ms, which is 480 samples at 48 kHz.
+        let interleaved: Vec<f32> = std::iter::repeat_n([0.0f32, 1.0], 441).flatten().collect();
+        let (sink, _) = run(
+            vec![
+                Tick::Buffers(vec![(interleaved.clone(), 0)]),
+                Tick::Buffers(vec![(interleaved, 0)]),
+            ],
+            2,
+            Some(44_100),
+        );
+        assert_eq!(sink.frames.len(), 2, "expected 10 ms per buffer");
+        // Downmixed: the average of 0.0 and 1.0. The resampler interpolates
+        // against the previous source sample, which at start-up is silence,
+        // so output begins with a short ramp-in — one output per source
+        // sample not yet seen, here ceil(48000/44100) = 2. About 40 µs.
+        const RAMP_IN: usize = 2;
+        assert_eq!(sink.frames[0][0], 0.0, "expected to start from silence");
+        assert!(
+            sink.frames[0][..RAMP_IN].iter().all(|&s| s < 0.5),
+            "the ramp should climb toward the signal: {:?}",
+            &sink.frames[0][..RAMP_IN]
+        );
+        assert!(
+            sink.frames[0][RAMP_IN..]
+                .iter()
+                .all(|&s| (s - 0.5).abs() < 1e-3),
+            "should have settled by sample {RAMP_IN}: got {}",
+            sink.frames[0][RAMP_IN]
+        );
+        assert!(
+            sink.frames[1].iter().all(|&s| (s - 0.5).abs() < 1e-3),
+            "steady state should be clean: {}",
+            sink.frames[1][0]
+        );
+    }
+
+    /// Stopping must be honoured promptly even mid-stream.
+    #[test]
+    fn the_stop_flag_ends_the_pump() {
+        let stop = Arc::new(AtomicBool::new(true));
+        let mut engine = ScriptedEngine::new(
+            vec![Tick::Buffers(vec![buffer(FRAME_SAMPLES, 0.5)])],
+            stop.clone(),
+        );
+        let mut sink = Recorder::default();
+        pump(&mut engine, 1, None, &mut sink, &stop).unwrap();
+        assert!(
+            sink.frames.is_empty(),
+            "already stopped; nothing should run"
+        );
     }
 }
 

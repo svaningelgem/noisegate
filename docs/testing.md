@@ -18,8 +18,8 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **65%**, which is just under
-the level already reached (66.9%). A pull request may raise that number; it must
+CI enforces a **minimum** line coverage, currently **68%**, which is just under
+the level already reached (70.0%). A pull request may raise that number; it must
 never lower it. When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
 PR — a tag must never publish something a pull request would have failed.
@@ -43,8 +43,8 @@ PR — a tag must never publish something a pull request would have failed.
 | `dsp/onnx.rs` | 76% | runs a real session against `testdata/streaming_contract.onnx` |
 | `mmcss.rs` | 77% | asks the OS scheduler for Pro Audio priority |
 | `firstrun.rs` | 75% | the dialog *text* is testable; the message box is not |
-| `wasapi_capture.rs` | 46% | the resamplers and frame accumulator; the COM loop is not |
-| `wasapi_render.rs` | 45% | same — `UpConverter` is covered, the engine calls are not |
+| `wasapi_capture.rs` | 65% | the pump runs against a scripted engine; only the COM setup is left |
+| `wasapi_render.rs` | 64% | same |
 | `tray.rs` | 47% | the watchdog, menu labels and icons; the event loop is not |
 | `main.rs` | 44% | argument parsing and the single-instance lock; `real_main` is not |
 | `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
@@ -66,14 +66,38 @@ workflows download it into `target/debug` before running tests. Locally they
 skip with a message if it is missing; when `CI` is set they fail instead, so
 they cannot silently stop running while the build stays green.
 
-The uncovered majority is not untested-because-lazy; it is code whose entire
+## Encoding a regression instead of describing one
+
+`CaptureEngine` and `RenderEngine` exist so audio failures can be written down.
+Neither can be reproduced on demand against real hardware — a device that
+disappears when a dock is unplugged, an engine that signals and then has
+nothing, a buffer flagged silent, an event that never fires — but each is a
+short sequence of `Tick`s against the scripted engine in the test module.
+
+When a bug report arrives, the first move is to express it as a script:
+
+```rust
+let (sink, result) = run(
+    vec![
+        Tick::Buffers(vec![buffer(FRAME_SAMPLES, 0.5)]),
+        Tick::Invalidated,
+    ],
+    1,
+    None,
+);
+```
+
+The abstraction buys little coverage on its own. What it buys is that the next
+report becomes a test rather than a comment.
+
+The uncovered remainder is not untested-because-lazy; it is code whose entire
 job is talking to Windows. Reaching 100% needs one of:
 
-1. **More hardware abstraction.** `Pipeline` already takes an `AudioIo` trait,
-   so the ring buffers, DSP thread, bypass and shutdown paths are all tested
-   against a fake device. The same treatment for `wasapi_capture`/
-   `wasapi_render` internals is the remaining chunk, and a larger one — those
-   modules are mostly `unsafe` COM calls with little logic to separate out.
+1. **COM setup coverage.** What is left in `wasapi_capture`/`wasapi_render` is
+   the one-shot ceremony: activate the device, negotiate the mix format, create
+   the event, start the client. It is a sequence of `unsafe` calls with almost
+   no logic between them, and a fake would check our call ordering against our
+   own assumptions rather than against WASAPI.
 2. **Loopback tests on a machine with a virtual cable** — CI runners have no
    audio devices at all, so these could only run locally or on a self-hosted
    runner.

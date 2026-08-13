@@ -164,57 +164,126 @@ fn render_loop(
         client.Start().map_err(|e| AudioError::wasapi("Start", e))?;
         let _ = ready_tx.send(Ok(()));
 
-        let mut upconverter = UpConverter::new(SAMPLE_RATE, device_rate, device_channels);
-        let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 2);
-
-        while !stop.load(Ordering::Acquire) {
-            let wait = WaitForSingleObject(event, 200);
-            if wait != WAIT_OBJECT_0 {
-                continue;
-            }
-
-            let padding = client
-                .GetCurrentPadding()
-                .map_err(|e| AudioError::wasapi("GetCurrentPadding", e))?;
-            let frames_writable = buffer_frames.saturating_sub(padding);
-            if frames_writable == 0 {
-                continue;
-            }
-
-            // Pull mono frames until we have enough pre-converted samples to
-            // fill `frames_writable` frames at the device rate.
-            let needed_src = source_samples_needed(frames_writable, device_rate);
-
-            while pending.len() < needed_src {
-                match source.next_frame() {
-                    Some(f) => pending.extend_from_slice(&f),
-                    None => {
-                        source.on_underrun();
-                        // Pad with silence so we don't busy-loop or stall.
-                        pending.extend(std::iter::repeat_n(0.0, FRAME_SAMPLES));
-                    }
-                }
-            }
-
-            let buf = render_client
-                .GetBuffer(frames_writable)
-                .map_err(|e| AudioError::wasapi("GetBuffer", e))?;
-
-            let consumed = upconverter.write_into(
-                &pending[..needed_src.min(pending.len())],
-                buf as *mut f32,
-                frames_writable as usize,
-            );
-            // Drop the source samples we used.
-            pending.drain(..consumed);
-
-            render_client
-                .ReleaseBuffer(frames_writable, 0)
-                .map_err(|e| AudioError::wasapi("ReleaseBuffer", e))?;
-        }
+        let mut engine = WasapiRenderEngine {
+            client: client.clone(),
+            render_client,
+            event,
+            buffer_frames,
+        };
+        let result = pump(&mut engine, device_rate, device_channels, source, stop);
 
         let _ = client.Stop();
-        Ok(())
+        result
+    }
+}
+
+/// The audio engine as the render pump uses it.
+///
+/// The mirror of [`crate::wasapi_capture::CaptureEngine`], and there for the
+/// same reason: an engine that stops accepting frames, one that goes away
+/// mid-stream, and a source that cannot keep up are all sequences that can be
+/// written down here rather than reproduced on hardware.
+pub(crate) trait RenderEngine {
+    /// Wait for the engine's buffer-ready event. `false` on timeout.
+    fn wait(&mut self, timeout: std::time::Duration) -> bool;
+
+    /// How many frames the engine can take right now.
+    fn writable_frames(&mut self) -> Result<u32>;
+
+    /// Hand `fill` a buffer for `frames` frames, then release it back.
+    ///
+    /// # Safety
+    /// `fill` receives a pointer valid for `frames * channels` f32s.
+    unsafe fn with_buffer(
+        &mut self,
+        frames: u32,
+        fill: &mut dyn FnMut(*mut f32) -> usize,
+    ) -> Result<()>;
+}
+
+const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Feed the engine from `source` until asked to stop.
+pub(crate) fn pump(
+    engine: &mut dyn RenderEngine,
+    device_rate: u32,
+    device_channels: usize,
+    source: &mut dyn FrameSource,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let mut upconverter = UpConverter::new(SAMPLE_RATE, device_rate, device_channels);
+    let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 2);
+
+    while !stop.load(Ordering::Acquire) {
+        if !engine.wait(WAIT_TIMEOUT) {
+            continue;
+        }
+
+        let frames_writable = engine.writable_frames()?;
+        if frames_writable == 0 {
+            continue;
+        }
+
+        // Pull mono frames until we have enough pre-converted samples to
+        // fill `frames_writable` frames at the device rate.
+        let needed_src = source_samples_needed(frames_writable, device_rate);
+        while pending.len() < needed_src {
+            match source.next_frame() {
+                Some(f) => pending.extend_from_slice(&f),
+                None => {
+                    source.on_underrun();
+                    // Pad with silence so we don't busy-loop or stall.
+                    pending.extend(std::iter::repeat_n(0.0, FRAME_SAMPLES));
+                }
+            }
+        }
+
+        let available = needed_src.min(pending.len());
+        let mut consumed = 0usize;
+        unsafe {
+            engine.with_buffer(frames_writable, &mut |buf| {
+                consumed =
+                    upconverter.write_into(&pending[..available], buf, frames_writable as usize);
+                consumed
+            })?;
+        }
+        // Drop the source samples we used.
+        pending.drain(..consumed);
+    }
+    Ok(())
+}
+
+struct WasapiRenderEngine {
+    client: IAudioClient3,
+    render_client: IAudioRenderClient,
+    event: windows::Win32::Foundation::HANDLE,
+    buffer_frames: u32,
+}
+
+impl RenderEngine for WasapiRenderEngine {
+    fn wait(&mut self, timeout: std::time::Duration) -> bool {
+        unsafe { WaitForSingleObject(self.event, timeout.as_millis() as u32) == WAIT_OBJECT_0 }
+    }
+
+    fn writable_frames(&mut self) -> Result<u32> {
+        let padding = unsafe { self.client.GetCurrentPadding() }
+            .map_err(|e| AudioError::wasapi("GetCurrentPadding", e))?;
+        Ok(self.buffer_frames.saturating_sub(padding))
+    }
+
+    unsafe fn with_buffer(
+        &mut self,
+        frames: u32,
+        fill: &mut dyn FnMut(*mut f32) -> usize,
+    ) -> Result<()> {
+        let buf = self
+            .render_client
+            .GetBuffer(frames)
+            .map_err(|e| AudioError::wasapi("GetBuffer", e))?;
+        fill(buf as *mut f32);
+        self.render_client
+            .ReleaseBuffer(frames, 0)
+            .map_err(|e| AudioError::wasapi("ReleaseBuffer", e))
     }
 }
 
@@ -281,6 +350,213 @@ impl UpConverter {
             self.last = src[(consumed - 1).min(src.len() - 1)];
         }
         consumed.min(src.len())
+    }
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use super::*;
+
+    enum Tick {
+        /// The engine can take this many frames.
+        Writable(u32),
+        /// The event did not fire.
+        Timeout,
+        /// The engine is full — nothing to do this tick.
+        Full,
+        /// The endpoint went away underneath us.
+        Invalidated,
+    }
+
+    struct ScriptedEngine {
+        ticks: std::collections::VecDeque<Tick>,
+        exhausted: Arc<AtomicBool>,
+        channels: usize,
+        /// Everything written, in order, so a test can look at the audio.
+        written: Vec<f32>,
+        buffers_taken: usize,
+    }
+
+    impl RenderEngine for ScriptedEngine {
+        fn wait(&mut self, _timeout: std::time::Duration) -> bool {
+            match self.ticks.front() {
+                None => {
+                    self.exhausted.store(true, Ordering::Release);
+                    false
+                }
+                Some(Tick::Timeout) => {
+                    self.ticks.pop_front();
+                    false
+                }
+                Some(_) => true,
+            }
+        }
+
+        fn writable_frames(&mut self) -> Result<u32> {
+            match self.ticks.pop_front() {
+                Some(Tick::Writable(n)) => Ok(n),
+                Some(Tick::Full) => Ok(0),
+                Some(Tick::Invalidated) => Err(AudioError::DeviceInvalidated {
+                    context: "GetCurrentPadding",
+                }),
+                _ => Ok(0),
+            }
+        }
+
+        unsafe fn with_buffer(
+            &mut self,
+            frames: u32,
+            fill: &mut dyn FnMut(*mut f32) -> usize,
+        ) -> Result<()> {
+            // NaN-filled so an unwritten tail is visible rather than plausible.
+            let mut buf = vec![f32::NAN; frames as usize * self.channels];
+            fill(buf.as_mut_ptr());
+            assert!(
+                !buf.iter().any(|s| s.is_nan()),
+                "the engine buffer was left partly unwritten — the device would \
+                 play whatever was in that memory"
+            );
+            self.written.extend_from_slice(&buf);
+            self.buffers_taken += 1;
+            Ok(())
+        }
+    }
+
+    /// A source that yields a fixed number of frames and then runs dry.
+    struct Source {
+        remaining: usize,
+        value: f32,
+        underruns: usize,
+    }
+
+    impl FrameSource for Source {
+        fn next_frame(&mut self) -> Option<Frame> {
+            if self.remaining == 0 {
+                return None;
+            }
+            self.remaining -= 1;
+            Some([self.value; FRAME_SAMPLES])
+        }
+        fn on_underrun(&mut self) {
+            self.underruns += 1;
+        }
+    }
+
+    fn run(
+        ticks: Vec<Tick>,
+        device_rate: u32,
+        channels: usize,
+        frames_available: usize,
+    ) -> (ScriptedEngine, Source, Result<()>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut engine = ScriptedEngine {
+            ticks: ticks.into(),
+            exhausted: stop.clone(),
+            channels,
+            written: Vec::new(),
+            buffers_taken: 0,
+        };
+        let mut source = Source {
+            remaining: frames_available,
+            value: 0.5,
+            underruns: 0,
+        };
+        let result = pump(&mut engine, device_rate, channels, &mut source, &stop);
+        (engine, source, result)
+    }
+
+    #[test]
+    fn audio_reaches_the_engine() {
+        let (engine, _, result) = run(vec![Tick::Writable(480)], SAMPLE_RATE, 2, 4);
+        assert!(result.is_ok());
+        assert_eq!(engine.buffers_taken, 1);
+        assert_eq!(engine.written.len(), 480 * 2, "480 frames x 2 channels");
+    }
+
+    /// The failure that matters here: if the pump consumed fewer source
+    /// samples than it played, `pending` would grow every tick until the
+    /// process ran out of memory — and the audio would drift further behind
+    /// real time the whole while.
+    #[test]
+    fn the_pending_queue_does_not_grow_without_bound() {
+        // 200 ticks of 441 device frames at 44.1 kHz, with a source that
+        // always has audio: sustained operation, not a burst.
+        let ticks: Vec<Tick> = (0..200).map(|_| Tick::Writable(441)).collect();
+        let (engine, source, result) = run(ticks, 44_100, 2, 10_000);
+        assert!(result.is_ok());
+        assert_eq!(engine.buffers_taken, 200);
+        assert_eq!(source.underruns, 0, "the source never ran dry");
+
+        // 200 buffers x 10 ms = 2 s of audio, so about 2 s of source consumed.
+        // Frames pulled = 10_000 - remaining.
+        let pulled = 10_000 - source.remaining;
+        let expected = 200; // 200 x 10 ms, one 480-sample frame each
+        assert!(
+            pulled.abs_diff(expected) <= 2,
+            "pulled {pulled} frames to play {expected} — the queue is drifting"
+        );
+    }
+
+    /// A source that runs dry must produce silence rather than stalling the
+    /// device or busy-looping.
+    #[test]
+    fn an_empty_source_renders_silence_and_says_so() {
+        let (engine, source, _) = run(vec![Tick::Writable(480)], SAMPLE_RATE, 1, 0);
+        assert!(source.underruns > 0, "the underrun must be reported");
+        assert!(
+            engine.written.iter().all(|&s| s == 0.0),
+            "expected silence, got {}",
+            engine.written[0]
+        );
+    }
+
+    /// A full engine is the normal case when the buffer is still draining.
+    #[test]
+    fn a_full_engine_is_skipped_without_taking_a_buffer() {
+        let (engine, source, result) = run(
+            vec![Tick::Full, Tick::Full, Tick::Writable(480)],
+            SAMPLE_RATE,
+            1,
+            4,
+        );
+        assert!(result.is_ok());
+        assert_eq!(engine.buffers_taken, 1, "took a buffer it could not fill");
+        assert_eq!(source.underruns, 0);
+    }
+
+    #[test]
+    fn timeouts_do_not_end_the_stream() {
+        let (engine, _, result) = run(
+            vec![Tick::Timeout, Tick::Timeout, Tick::Writable(480)],
+            SAMPLE_RATE,
+            1,
+            4,
+        );
+        assert!(result.is_ok());
+        assert_eq!(engine.buffers_taken, 1);
+    }
+
+    #[test]
+    fn a_device_that_disappears_surfaces_as_recoverable() {
+        let (_, _, result) = run(
+            vec![Tick::Writable(480), Tick::Invalidated],
+            SAMPLE_RATE,
+            1,
+            8,
+        );
+        let err = result.expect_err("must not be swallowed");
+        assert!(err.is_recoverable(), "{err} should be retried");
+    }
+
+    /// Every frame of the engine's buffer has to be written, whatever the
+    /// rate conversion — the NaN check in the fake enforces it.
+    #[test]
+    fn the_whole_buffer_is_written_at_every_rate() {
+        for (rate, frames) in [(44_100u32, 441u32), (48_000, 480), (96_000, 960)] {
+            let (engine, _, result) = run(vec![Tick::Writable(frames)], rate, 2, 8);
+            assert!(result.is_ok(), "{rate} Hz failed");
+            assert_eq!(engine.written.len(), frames as usize * 2, "{rate} Hz");
+        }
     }
 }
 
