@@ -136,10 +136,10 @@ So interfering speech is a first-class noise class:
 - **Mixture rate solved, not guessed.** libDF combines `uniform(2,6)` noise
   clips per mixture, so the interferer share `f` of the noise pool follows
   `1-(1-f)^3.5 = 1/3` → `f = 0.109`. Verified at 0.332 across all splits.
-- `p_reverb = 0.2`, above DFN3's 0.1, because libDF makes the *input* more
-  reverberant than the *target*; that dereverberation pressure is the likely
-  mechanism behind the proximity discrimination, so it is leaned on
-  deliberately.
+- `p_reverb`: DFN3 ships 0.1. Run 1 used **0.2**, on the theory that libDF
+  makes the *input* more reverberant than the *target*, and that this
+  dereverberation pressure is the mechanism behind proximity discrimination —
+  so it was leaned on deliberately. **That was too much; see below.**
 
 Use the **official DFN3 recipe**, not the generated defaults — the defaults
 leave the multi-resolution spectral loss at zero and shrink `conv_ch` from 64
@@ -168,3 +168,33 @@ Be careful with it. **The measure rewards a model that simply outputs less** —
 a p25 of −50 dB is near-silence in the quiet parts, which looks like a triumph
 and may not be one. Pair it with listening and a speech-quality metric before
 concluding anything.
+
+## Run 1: what went wrong
+
+Stopped early at epoch 40 (patience 12), best at **epoch 29**, valid 1.00606.
+The percentile numbers looked like a landslide, and were not:
+
+| near-voice band vs raw, loudest 5% of windows | 80–300 | 300–800 | 800–2k | 2–4k | 4–8k | 8–16k |
+|---|---|---|---|---|---|---|
+| DeepFilterNet3 | −1.3 | −1.0 | −0.7 | +0.5 | **+1.7** | +1.0 |
+| Run 1 (epoch 29) | −9.3 | −3.0 | −2.6 | −5.1 | **−13.7** | −8.7 |
+
+Every band down, worst in the presence band where DFN3 adds a little. On the
+percentile measure it removed 5.3 dB from the near voice at p95 on `kid` where
+DFN3 removes 0.1, and **33.9 dB** on `chat`. Meanwhile the noise floor dropped
+65.8 dB at p50 against DFN3's 27.0. That combination is the signature of a
+model that learned to **suppress rather than separate** — and it is exactly
+what the warning above describes, so the warning earned its place.
+
+The suspect is `p_reverb = 0.2`. Push dereverberation hard enough and the model
+treats the near voice's *own* room reflections as noise, taking the brightness
+with them. Run 2 sets it back to DFN3's 0.1 and changes nothing else that
+affects the maths, so the comparison is single-variable against epoch 29.
+
+**Do not bundle speed work into an experiment run.** Raising `batch_size` from
+64 to 96 is the obvious win — the bottleneck is sequential GRU steps, so bigger
+batches buy throughput almost free — but it moves gradient noise and the LR
+schedule, and a better result would no longer be attributable to `p_reverb`.
+`early_stopping_patience` is safe to change (12 → 8; run 1 spent 11 epochs
+after its best proving it was finished), as are `jit` and `torch.compile`,
+which do not change the arithmetic.
