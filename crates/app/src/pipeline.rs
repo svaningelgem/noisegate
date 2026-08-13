@@ -4,7 +4,7 @@
 //! at 8 frames (~80 ms) — enough headroom to absorb a scheduler hiccup,
 //! small enough that we don't hide actual problems.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -63,6 +63,8 @@ pub struct Pipeline {
 
     bypass: Arc<AtomicBool>,
     stats: Arc<Stats>,
+    /// See [`Pipeline::render_polls`].
+    render_polls: Arc<AtomicU64>,
     denoiser_name: &'static str,
     /// Used to ask the DSP thread to exit cleanly when we drop.
     shutdown: Arc<AtomicBool>,
@@ -176,6 +178,7 @@ impl Pipeline {
                                           // gap means anything, and that is what gets reported.
                 let mut last_frame_at = std::time::Instant::now();
                 let mut reported_gap = false;
+                let mut last_drop_log: Option<std::time::Instant> = None;
                 while !shutdown_dsp.load(Ordering::Acquire) {
                     let mut frame = match cons_a.try_pop() {
                         Some(f) => f,
@@ -205,7 +208,19 @@ impl Pipeline {
                     if prod_b.try_push(frame).is_err() {
                         // Render is behind — drop. Audible as a click; better
                         // than blocking the DSP thread.
-                        warn!("ring B full; dropping a frame");
+                        //
+                        // Throttled: when the render side dies the ring stays
+                        // full forever, and one line per frame is 100 a second
+                        // for as long as the app runs.
+                        let due = last_drop_log.is_none_or(|t: std::time::Instant| {
+                            t.elapsed() > std::time::Duration::from_secs(5)
+                        });
+                        if due {
+                            warn!(
+                                "ring B full; dropping frames (is the output device still there?)"
+                            );
+                            last_drop_log = Some(std::time::Instant::now());
+                        }
                     }
                 }
             })
@@ -235,25 +250,40 @@ impl Pipeline {
         // Render source: pulls from ring B.
         struct Source<C: Consumer<Item = Frame> + Send> {
             cons: C,
-            last_underrun_log: std::time::Instant,
+            /// `None` = never logged, so the first underrun reports at once.
+            /// Not `Instant::now() - 60s`: subtracting from a fresh Instant
+            /// panics when the machine has been up for less than the offset,
+            /// and starting with Windows means booting is exactly when that
+            /// happens.
+            last_underrun_log: Option<std::time::Instant>,
+            /// Bumped on every poll, which is the render thread's pulse: the
+            /// engine only asks for audio while that thread is alive and its
+            /// device is signalling. See `Pipeline::render_polls`.
+            polls: Arc<AtomicU64>,
         }
         impl<C: Consumer<Item = Frame> + Send> audio_io::wasapi_render::FrameSource for Source<C> {
             fn next_frame(&mut self) -> Option<Frame> {
+                self.polls.fetch_add(1, Ordering::Relaxed);
                 self.cons.try_pop()
             }
             fn on_underrun(&mut self) {
-                if self.last_underrun_log.elapsed() > std::time::Duration::from_secs(5) {
+                let due = self
+                    .last_underrun_log
+                    .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5));
+                if due {
                     tracing::warn!("render underrun (cleaned audio not arriving from DSP)");
-                    self.last_underrun_log = std::time::Instant::now();
+                    self.last_underrun_log = Some(std::time::Instant::now());
                 }
             }
         }
 
+        let render_polls = Arc::new(AtomicU64::new(0));
         let render = io.start_render(
             output_id,
             Box::new(Source {
                 cons: cons_b,
-                last_underrun_log: std::time::Instant::now() - std::time::Duration::from_secs(60),
+                last_underrun_log: None,
+                polls: render_polls.clone(),
             }),
         )?;
 
@@ -263,6 +293,7 @@ impl Pipeline {
             dsp_thread: Some(dsp_thread),
             bypass,
             stats,
+            render_polls,
             denoiser_name,
             shutdown,
         })
@@ -290,6 +321,19 @@ impl Pipeline {
     /// frames, so this distinguishes "quiet room" from "dead device".
     pub fn frames_processed(&self) -> u64 {
         self.stats.frames.load(Ordering::Relaxed)
+    }
+
+    /// The render thread's pulse, for the same watchdog.
+    ///
+    /// `frames_processed` only proves the *capture* half is alive: it is
+    /// bumped by the DSP thread as it drains ring A. If the output endpoint
+    /// dies — the cable reconfigured in Windows sound settings, say — capture
+    /// and DSP carry on happily and that counter keeps climbing while nothing
+    /// reaches the far end of the call at all. This one stops when the render
+    /// thread stops asking for audio, which is the only honest signal that
+    /// half of the pipeline is still running.
+    pub fn render_polls(&self) -> u64 {
+        self.render_polls.load(Ordering::Relaxed)
     }
 }
 
@@ -457,6 +501,30 @@ mod tests {
             .enumerate()
             .any(|(i, f)| f.as_slice() != input[i].as_slice());
         assert!(any_different, "denoiser left the signal untouched");
+    }
+
+    /// The render side needs its own pulse: `frames_processed` is bumped by
+    /// the DSP thread and keeps climbing happily while the output endpoint is
+    /// dead, which is precisely the failure the tray watchdog exists to catch.
+    #[test]
+    fn render_polls_advance_alongside_the_frame_counter() {
+        let io = FakeIo::new(test_signal(25));
+        let p = Pipeline::build(&io, config(true), "in", "out").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            p.render_polls() > 0,
+            "the render thread's liveness signal never moved"
+        );
+    }
+
+    /// A fresh pipeline must not panic on a machine that has just booted —
+    /// which is exactly when NoiseGate starts, since it runs at login. An
+    /// `Instant::now() - 60s` sentinel does panic there.
+    #[test]
+    fn building_a_pipeline_does_not_do_arithmetic_on_a_fresh_instant() {
+        let io = FakeIo::new(test_signal(2));
+        let p = Pipeline::build(&io, config(true), "in", "out");
+        assert!(p.is_ok(), "construction must not depend on system uptime");
     }
 
     #[test]

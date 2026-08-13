@@ -81,19 +81,61 @@ struct App {
 
 /// Watches for the pipeline going quiet without saying so.
 ///
-/// WASAPI reports a dead capture stream by simply never signalling its event
-/// again — no error, no callback. The audio threads stay alive, the render
-/// side keeps writing silence, and the app looks perfectly healthy while the
-/// microphone has been off the air for a quarter of an hour. Frames stop
-/// advancing though, and silence still produces frames, so that counter is
-/// the one honest signal available.
+/// WASAPI reports a dead stream by simply never signalling its event again —
+/// no error, no callback. The threads stay alive and the app looks perfectly
+/// healthy while nothing has reached the far end of the call for a quarter of
+/// an hour. Counters are the only honest signal, because silence still
+/// produces frames: a quiet room and a dead device look identical otherwise.
+///
+/// Both halves need watching, and this originally only watched one. The
+/// capture counter is bumped by the DSP thread, so it keeps climbing quite
+/// happily when the *output* endpoint dies — reconfigure the virtual cable in
+/// Windows sound settings and that is exactly what happens. Capture and DSP
+/// carry on, the icon stays teal, and nobody on the call hears anything again.
 struct Health {
-    last_frames: u64,
-    last_change: Instant,
+    /// The DSP thread draining ring A — proves capture is alive.
+    capture: Progress,
+    /// The render thread asking for audio — proves the *output* is alive.
+    /// Watching only the first would miss the cable being reconfigured
+    /// underneath us, which stops the call hearing anything while capture and
+    /// DSP carry on and the counter keeps climbing.
+    render: Progress,
     last_recovery: Instant,
     stalled: bool,
 }
 
+/// A counter that is supposed to keep moving, and when it last did.
+#[derive(Debug)]
+struct Progress {
+    last: u64,
+    last_change: Instant,
+}
+
+impl Progress {
+    fn new(now: Instant) -> Self {
+        Self {
+            last: 0,
+            last_change: now,
+        }
+    }
+
+    /// Feed the current value; `true` while it is still moving.
+    fn moving(&mut self, value: u64, now: Instant) -> bool {
+        if value != self.last {
+            self.last = value;
+            self.last_change = now;
+        }
+        now.duration_since(self.last_change) < STALL_AFTER
+    }
+
+    fn reset(&mut self, value: u64, now: Instant) {
+        self.last = value;
+        self.last_change = now;
+    }
+}
+
+/// How often the event loop wakes to check health and refresh the tooltip.
+const TICK: Duration = Duration::from_millis(500);
 /// Frames stop for this long => the stream is dead, not the room quiet.
 const STALL_AFTER: Duration = Duration::from_secs(2);
 /// Don't hammer the device if it stays gone.
@@ -118,23 +160,26 @@ impl Health {
 
     fn new_at(now: Instant) -> Self {
         Self {
-            last_frames: 0,
-            last_change: now,
+            capture: Progress::new(now),
+            render: Progress::new(now),
             last_recovery: now,
             stalled: false,
         }
     }
 
-    /// Feed the watchdog one observation of the frame counter.
+    /// Feed the watchdog one observation of both counters.
     ///
     /// Takes `now` rather than reading the clock so the stall and recovery
     /// timings can be tested without waiting seconds per case.
-    fn observe(&mut self, frames: u64, now: Instant) -> HealthAction {
-        if frames != self.last_frames {
-            self.last_frames = frames;
-            self.last_change = now;
-            // Silence still produces frames, so any movement means the stream
-            // is alive — a quiet room is not a stall.
+    fn observe(&mut self, frames: u64, render_polls: u64, now: Instant) -> HealthAction {
+        // Both must be evaluated: each records its own last-changed time.
+        let capture_moving = self.capture.moving(frames, now);
+        let render_moving = self.render.moving(render_polls, now);
+
+        // Silence still produces frames and the engine still asks for them,
+        // so movement on both sides means the stream is alive — a quiet room
+        // is not a stall.
+        if capture_moving && render_moving {
             if self.stalled {
                 info!("audio recovered");
                 self.stalled = false;
@@ -146,16 +191,14 @@ impl Health {
             return HealthAction::default();
         }
 
-        if now.duration_since(self.last_change) < STALL_AFTER {
-            return HealthAction::default();
-        }
-
         let mut action = HealthAction::default();
         if !self.stalled {
-            warn!(
-                stalled_for_ms = now.duration_since(self.last_change).as_millis() as u64,
-                "audio stopped flowing — the capture device probably went away"
-            );
+            let side = match (capture_moving, render_moving) {
+                (false, false) => "capture and output",
+                (false, true) => "the capture device",
+                _ => "the output device",
+            };
+            warn!(side, "audio stopped flowing — {side} probably went away");
             self.stalled = true;
             action.redraw = true;
         }
@@ -165,6 +208,22 @@ impl Health {
             action.restart = true;
         }
         action
+    }
+
+    /// Nothing is running, so there are no counters to watch. Recovery still
+    /// has to keep trying: a restart that failed because the microphone was
+    /// unplugged must succeed once it is plugged back in.
+    fn observe_stopped(&mut self, now: Instant) -> HealthAction {
+        self.stalled = true;
+        if now.duration_since(self.last_recovery) < RECOVERY_INTERVAL {
+            return HealthAction::default();
+        }
+        self.last_recovery = now;
+        info!("audio is not running; trying again");
+        HealthAction {
+            restart: true,
+            ..Default::default()
+        }
     }
 }
 
@@ -433,8 +492,9 @@ impl App {
         match Pipeline::start(self.cfg.clone()) {
             Ok(p) => {
                 info!(denoiser = p.denoiser_name(), "audio restarted");
-                self.health.last_frames = p.frames_processed();
-                self.health.last_change = Instant::now();
+                let now = Instant::now();
+                self.health.capture.reset(p.frames_processed(), now);
+                self.health.render.reset(p.render_polls(), now);
                 self.health.stalled = false;
                 self.pipeline = Some(p);
             }
@@ -473,10 +533,16 @@ impl App {
     /// usual cause is a device that vanished and came back, and interrupting
     /// someone mid-call to announce that would be worse than fixing it.
     fn check_health(&mut self) {
-        let Some(frames) = self.pipeline.as_ref().map(|p| p.frames_processed()) else {
-            return; // Nothing running; a failed start already badged the icon.
+        let now = Instant::now();
+        let action = match self.pipeline.as_ref() {
+            Some(p) => self
+                .health
+                .observe(p.frames_processed(), p.render_polls(), now),
+            // A restart that failed leaves no pipeline. Keep trying rather
+            // than giving up for the rest of the session: the usual reason is
+            // a device that was still missing at the moment we retried.
+            None => self.health.observe_stopped(now),
         };
-        let action = self.health.observe(frames, Instant::now());
         // Badge first: even if recovery fails, stop looking healthy.
         if action.redraw {
             self.refresh_icon();
@@ -621,7 +687,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.items = Some(items);
 
         // Tick periodically so we can refresh the tooltip CPU meter.
-        event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(500)));
+        // Re-armed at the end of every `about_to_wait`; see there for why.
+        event_loop.set_control_flow(ControlFlow::wait_duration(TICK));
 
         // Now that there's an icon in the tray, it's safe to interrupt with a
         // dialog: the user can see what it belongs to, and the badge is still
@@ -704,7 +771,13 @@ impl ApplicationHandler<UserEvent> for App {
         // No window — nothing to do.
     }
 
-    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        // `wait_duration` is `WaitUntil(now + d)` — a deadline, not a period.
+        // Set once, it expires after the first tick and every later pass sees
+        // a deadline already in the past, so the loop never sleeps again: a
+        // background tray app quietly pinning a core. Re-arm on every pass.
+        event_loop.set_control_flow(ControlFlow::wait_duration(TICK));
+
         self.check_health();
         if self.last_tooltip_update.elapsed() >= Duration::from_millis(1000) {
             self.last_tooltip_update = Instant::now();
@@ -996,7 +1069,7 @@ mod tests {
         let base = Instant::now();
         let mut h = Health::new_at(base);
         for i in 1..=20u64 {
-            let action = h.observe(i, at(base, i as f32));
+            let action = h.observe(i, i, at(base, i as f32));
             assert_eq!(action, HealthAction::default(), "tick {i} was acted on");
         }
         assert!(!h.stalled);
@@ -1008,8 +1081,8 @@ mod tests {
     fn a_brief_gap_is_not_a_stall() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, base);
-        assert_eq!(h.observe(1, at(base, 1.9)), HealthAction::default());
+        h.observe(1, 1, base);
+        assert_eq!(h.observe(1, 1, at(base, 1.9)), HealthAction::default());
         assert!(!h.stalled, "1.9s is under the 2s threshold");
     }
 
@@ -1017,9 +1090,9 @@ mod tests {
     fn a_frozen_counter_badges_the_icon_immediately() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, base);
+        h.observe(1, 1, base);
 
-        let action = h.observe(1, at(base, 2.1));
+        let action = h.observe(1, 1, at(base, 2.1));
         assert!(action.redraw, "the icon must stop looking healthy");
         assert!(h.stalled);
     }
@@ -1035,15 +1108,18 @@ mod tests {
     fn recovery_waits_out_the_start_up_grace_but_not_a_later_failure() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, base);
-        assert!(!h.observe(1, at(base, 2.1)).restart, "still within grace");
-        assert!(h.observe(1, at(base, 5.1)).restart, "grace is over");
+        h.observe(1, 1, base);
+        assert!(
+            !h.observe(1, 1, at(base, 2.1)).restart,
+            "still within grace"
+        );
+        assert!(h.observe(1, 1, at(base, 5.1)).restart, "grace is over");
 
         // Now the same failure arriving after ten minutes of healthy audio.
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, at(base, 600.0));
-        let action = h.observe(1, at(base, 602.1));
+        h.observe(1, 1, at(base, 600.0));
+        let action = h.observe(1, 1, at(base, 602.1));
         assert!(action.redraw && action.restart, "must not wait: {action:?}");
     }
 
@@ -1052,19 +1128,19 @@ mod tests {
     fn recovery_is_not_attempted_more_than_once_per_interval() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, base);
+        h.observe(1, 1, base);
 
-        assert!(h.observe(1, at(base, 5.1)).restart);
+        assert!(h.observe(1, 1, at(base, 5.1)).restart);
 
         // Ticks arrive every 500 ms; none of these may retry.
         for t in [5.6, 6.1, 7.0, 9.0, 10.0] {
-            let action = h.observe(1, at(base, t));
+            let action = h.observe(1, 1, at(base, t));
             assert!(!action.restart, "retried after only {}s", t - 5.1);
             assert!(!action.redraw, "already badged at 2.1s");
         }
 
         // Past the interval, try again.
-        assert!(h.observe(1, at(base, 10.2)).restart);
+        assert!(h.observe(1, 1, at(base, 10.2)).restart);
     }
 
     /// The counter moving again is the only evidence of recovery there is.
@@ -1072,18 +1148,18 @@ mod tests {
     fn audio_coming_back_clears_the_badge() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        h.observe(1, base);
-        assert!(h.observe(1, at(base, 2.1)).redraw);
+        h.observe(1, 1, base);
+        assert!(h.observe(1, 1, at(base, 2.1)).redraw);
         assert!(h.stalled);
 
-        let action = h.observe(2, at(base, 2.5));
+        let action = h.observe(2, 2, at(base, 2.5));
         assert!(action.redraw, "the badge has to come off");
         assert!(!action.restart);
         assert!(!h.stalled);
 
         // And a later freeze is treated as a fresh stall, not a continuation.
-        assert_eq!(h.observe(2, at(base, 3.0)), HealthAction::default());
-        assert!(h.observe(2, at(base, 4.6)).redraw, "must badge again");
+        assert_eq!(h.observe(2, 2, at(base, 3.0)), HealthAction::default());
+        assert!(h.observe(2, 2, at(base, 4.6)).redraw, "must badge again");
     }
 
     /// The first observation happens before any audio has flowed. Starting
@@ -1092,10 +1168,94 @@ mod tests {
     fn a_pipeline_that_has_not_produced_anything_yet_is_given_time() {
         let base = Instant::now();
         let mut h = Health::new_at(base);
-        assert_eq!(h.observe(0, base), HealthAction::default());
-        assert_eq!(h.observe(0, at(base, 1.0)), HealthAction::default());
+        assert_eq!(h.observe(0, 0, base), HealthAction::default());
+        assert_eq!(h.observe(0, 0, at(base, 1.0)), HealthAction::default());
         // But a pipeline that never produces a single frame is still broken.
-        assert!(h.observe(0, at(base, 2.5)).redraw);
+        assert!(h.observe(0, 0, at(base, 2.5)).redraw);
+    }
+
+    /// The output half can die on its own: reconfigure the virtual cable in
+    /// Windows sound settings and its endpoint is invalidated while the
+    /// microphone is untouched. Capture and DSP carry on, so the frame counter
+    /// keeps climbing — and everyone on the call stops hearing anything.
+    /// Watching only that counter reports perfect health throughout.
+    #[test]
+    fn a_dead_output_is_caught_even_while_capture_keeps_running() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+
+        // Healthy: both sides moving.
+        for i in 1..=4u64 {
+            let t = at(base, i as f32 * 0.5);
+            assert_eq!(h.observe(i, i, t), HealthAction::default());
+        }
+
+        // Render stops asking for audio. Capture carries on regardless.
+        let action = h.observe(20, 4, at(base, 4.6));
+        assert!(
+            action.redraw,
+            "a dead output must badge the icon even though frames still flow"
+        );
+        assert!(h.stalled);
+    }
+
+    /// And the mirror image, so the two counters are not silently swapped.
+    #[test]
+    fn a_dead_capture_is_caught_even_while_the_output_keeps_polling() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, 1, base);
+
+        // Ring B empties, so render keeps polling and underrunning.
+        let action = h.observe(1, 50, at(base, 2.1));
+        assert!(action.redraw, "a dead microphone must still be caught");
+    }
+
+    /// The bug this branch exists to fix, one level up: when a restart fails
+    /// there is no pipeline left, so there are no counters to watch. Giving up
+    /// there means a mic unplugged for a few seconds is never picked up again
+    /// and the only way out is the menu — for the rest of the session.
+    #[test]
+    fn recovery_keeps_trying_when_there_is_no_pipeline_at_all() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+
+        // A restart has just failed; nothing is running.
+        assert!(!h.observe_stopped(at(base, 1.0)).restart, "within grace");
+        assert!(h.stalled, "and it must not look healthy meanwhile");
+
+        let first = h.observe_stopped(at(base, 5.1));
+        assert!(first.restart, "the retry loop must keep running");
+
+        // Still paced, not hammering the device.
+        for t in [5.6, 7.0, 9.9] {
+            assert!(!h.observe_stopped(at(base, t)).restart, "retried too soon");
+        }
+        assert!(h.observe_stopped(at(base, 10.2)).restart, "and again after");
+    }
+
+    /// Once a retry succeeds, the counters restart from whatever the new
+    /// pipeline reports — not from the dead one's values, which would read as
+    /// an immediate stall.
+    #[test]
+    fn a_successful_restart_rebases_both_counters() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(900, 900, base);
+        h.observe(900, 900, at(base, 2.1));
+        assert!(h.stalled);
+
+        // A fresh pipeline starts its counters at zero.
+        let now = at(base, 6.0);
+        h.capture.reset(0, now);
+        h.render.reset(0, now);
+        h.stalled = false;
+
+        assert_eq!(
+            h.observe(1, 1, at(base, 6.2)),
+            HealthAction::default(),
+            "the new pipeline's low counter must not read as a stall"
+        );
     }
 
     // ---- menu choices -------------------------------------------------
