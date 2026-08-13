@@ -194,9 +194,11 @@ mod tests {
 
     #[test]
     fn an_onnx_model_is_only_active_when_switched_on() {
-        let mut c = Config::default();
-        c.model_path = "nonexistent.onnx".into();
-        c.use_onnx = false;
+        let mut c = Config {
+            model_path: "nonexistent.onnx".into(),
+            use_onnx: false,
+            ..Config::default()
+        };
         assert!(c.active_model().is_none(), "off means off");
         // With use_onnx on, a path that does not exist still yields nothing,
         // so the pipeline falls back to RNNoise rather than failing.

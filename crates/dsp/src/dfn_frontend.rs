@@ -160,8 +160,12 @@ impl DfFrontend {
         for (x, w) in self.scratch_out.iter_mut().zip(&self.window) {
             *x *= w;
         }
-        for i in 0..HOP {
-            out[i] = self.scratch_out[i] + self.synthesis_mem[i];
+        for ((o, x), mem) in out
+            .iter_mut()
+            .zip(&self.scratch_out[..HOP])
+            .zip(&self.synthesis_mem[..HOP])
+        {
+            *o = x + mem;
         }
         let keep = FFT_SIZE - HOP;
         self.synthesis_mem.copy_within(HOP.., 0);
@@ -202,6 +206,10 @@ impl DfFrontend {
 }
 
 #[cfg(test)]
+// The expected values below are transcribed verbatim from a float64 reference
+// run. f32 cannot hold every digit, but trimming them would obscure where they
+// came from, which is the whole point of having them.
+#[allow(clippy::excessive_precision)]
 mod tests {
     use super::*;
 
