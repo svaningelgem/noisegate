@@ -18,7 +18,7 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **38%**, which is the level
+CI enforces a **minimum** line coverage, currently **42%**, which is the level
 already reached. A pull request may raise that number; it must never lower it.
 When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` in the same PR.
@@ -27,6 +27,7 @@ When coverage improves, bump `--fail-under-lines` in
 
 | area | covered | why |
 |---|---|---|
+| `dsp/dfn_frontend.rs` | 94% | pure DSP, checked against the reference implementation |
 | `devices.rs` | 89% | pure logic — device matching, priority, cable detection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
 | `format.rs` | 76% | mix-format validation is pure |
