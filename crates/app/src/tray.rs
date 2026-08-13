@@ -99,15 +99,72 @@ const STALL_AFTER: Duration = Duration::from_secs(2);
 /// Don't hammer the device if it stays gone.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
 
+/// What the watchdog wants done about what it just saw. Two independent
+/// flags rather than one verdict because the badge has to go up *before* a
+/// recovery attempt: if the restart fails we must already have stopped
+/// looking healthy.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HealthAction {
+    /// The stall state changed; the icon no longer matches it.
+    redraw: bool,
+    /// Rebuild the pipeline.
+    restart: bool,
+}
+
 impl Health {
     fn new() -> Self {
-        let now = Instant::now();
+        Self::new_at(Instant::now())
+    }
+
+    fn new_at(now: Instant) -> Self {
         Self {
             last_frames: 0,
             last_change: now,
             last_recovery: now,
             stalled: false,
         }
+    }
+
+    /// Feed the watchdog one observation of the frame counter.
+    ///
+    /// Takes `now` rather than reading the clock so the stall and recovery
+    /// timings can be tested without waiting seconds per case.
+    fn observe(&mut self, frames: u64, now: Instant) -> HealthAction {
+        if frames != self.last_frames {
+            self.last_frames = frames;
+            self.last_change = now;
+            // Silence still produces frames, so any movement means the stream
+            // is alive — a quiet room is not a stall.
+            if self.stalled {
+                info!("audio recovered");
+                self.stalled = false;
+                return HealthAction {
+                    redraw: true,
+                    ..Default::default()
+                };
+            }
+            return HealthAction::default();
+        }
+
+        if now.duration_since(self.last_change) < STALL_AFTER {
+            return HealthAction::default();
+        }
+
+        let mut action = HealthAction::default();
+        if !self.stalled {
+            warn!(
+                stalled_for_ms = now.duration_since(self.last_change).as_millis() as u64,
+                "audio stopped flowing — the capture device probably went away"
+            );
+            self.stalled = true;
+            action.redraw = true;
+        }
+        if now.duration_since(self.last_recovery) >= RECOVERY_INTERVAL {
+            self.last_recovery = now;
+            info!("attempting to restart audio");
+            action.restart = true;
+        }
+        action
     }
 }
 
@@ -188,6 +245,49 @@ fn default_entry(current_default: Option<&str>) -> (String, bool) {
         ),
         None => ("Windows default".to_string(), true),
     }
+}
+
+/// Record a microphone choice. An empty name is the "Windows default" entry,
+/// which means *stop* expressing a preference rather than remembering one.
+fn choose_microphone(cfg: &mut Config, name: &str) {
+    if name.is_empty() {
+        cfg.microphones.clear();
+    } else {
+        cfg.prefer_microphone(name);
+    }
+}
+
+/// Record a denoiser choice, remembering where the model was found so that
+/// switching back to it later doesn't ask the user to configure it again.
+fn choose_denoiser(cfg: &mut Config, onnx: bool) {
+    if onnx {
+        if let Some(p) = cfg.available_model() {
+            cfg.model_path = p.to_string_lossy().into_owned();
+        }
+    }
+    cfg.use_onnx = onnx;
+}
+
+/// Share of real time the denoiser is using, as a percentage.
+///
+/// Each frame is 10 ms of audio, so the budget is 10 ms of processing per
+/// frame; 100% means the DSP is exactly keeping up and any hiccup drops audio.
+fn cpu_percent(frames: u64, total_dsp_ns: u64) -> f64 {
+    if frames == 0 {
+        return 0.0;
+    }
+    let avg_dsp_ms = (total_dsp_ns as f64 / frames as f64) / 1_000_000.0;
+    avg_dsp_ms / 10.0 * 100.0
+}
+
+fn tooltip_text(denoiser: &str, enabled: bool, cpu_pct: f64, peak_ms: f64) -> String {
+    format!(
+        "NoiseGate ({})\n{}  |  CPU: {:.1}%  peak: {:.1}ms",
+        denoiser,
+        if enabled { "ON" } else { "BYPASS" },
+        cpu_pct,
+        peak_ms,
+    )
 }
 
 fn build_menu(cfg: &Config) -> (Menu, Items) {
@@ -376,34 +476,14 @@ impl App {
         let Some(frames) = self.pipeline.as_ref().map(|p| p.frames_processed()) else {
             return; // Nothing running; a failed start already badged the icon.
         };
-        if frames != self.health.last_frames {
-            self.health.last_frames = frames;
-            self.health.last_change = Instant::now();
-            if self.health.stalled {
-                info!("audio recovered");
-                self.health.stalled = false;
-                self.refresh_icon();
-            }
-            return;
-        }
-        if self.health.last_change.elapsed() < STALL_AFTER {
-            return;
-        }
-        if !self.health.stalled {
-            warn!(
-                stalled_for_ms = self.health.last_change.elapsed().as_millis() as u64,
-                "audio stopped flowing — the capture device probably went away"
-            );
-            self.health.stalled = true;
-            // Badge immediately: even if recovery fails, stop looking healthy.
+        let action = self.health.observe(frames, Instant::now());
+        // Badge first: even if recovery fails, stop looking healthy.
+        if action.redraw {
             self.refresh_icon();
         }
-        if self.health.last_recovery.elapsed() < RECOVERY_INTERVAL {
-            return;
+        if action.restart {
+            self.restart_pipeline_quietly();
         }
-        self.health.last_recovery = Instant::now();
-        info!("attempting to restart audio");
-        self.restart_pipeline_quietly();
     }
 
     /// Keep the icon in step with both bits of state it shows: teal vs orange
@@ -450,11 +530,7 @@ impl App {
     fn select_mic(&mut self, device_id: String, name: String) {
         {
             let mut c = self.cfg.write().unwrap();
-            if name.is_empty() {
-                c.microphones.clear(); // "Windows default"
-            } else {
-                c.prefer_microphone(&name);
-            }
+            choose_microphone(&mut c, &name);
             if let Err(e) = c.save() {
                 warn!(error = %e, "saving config failed");
             }
@@ -502,14 +578,7 @@ impl App {
         }
         {
             let mut c = self.cfg.write().unwrap();
-            // Remember the model path either way, so flipping back to ONNX
-            // doesn't ask the user to configure it again.
-            if onnx {
-                if let Some(p) = c.available_model() {
-                    c.model_path = p.to_string_lossy().into_owned();
-                }
-            }
-            c.use_onnx = onnx;
+            choose_denoiser(&mut c, onnx);
             if let Err(e) = c.save() {
                 warn!(error = %e, "saving config failed");
             }
@@ -640,10 +709,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.last_tooltip_update.elapsed() >= Duration::from_millis(1000) {
             self.last_tooltip_update = Instant::now();
             if let Some(tray) = &self.tray {
-                let text = match (&self.pipeline, self.health.stalled) {
-                    (Some(_), true) => "NoiseGate — no audio from the microphone".to_string(),
-                    (Some(p), false) => tooltip(p),
-                    (None, _) => "NoiseGate — stopped (pick a microphone)".to_string(),
+                let text = match status_text(self.pipeline.is_some(), self.health.stalled) {
+                    Some(fixed) => fixed.to_string(),
+                    None => tooltip(self.pipeline.as_ref().expect("running")),
                 };
                 let _ = tray.set_tooltip(Some(text));
             }
@@ -676,20 +744,23 @@ fn tooltip(p: &Pipeline) -> String {
     let frames = s.frames.load(Ordering::Relaxed);
     let total_ns = s.dsp_ns.load(Ordering::Relaxed);
     let peak_ns = s.peak_frame_ns.load(Ordering::Relaxed);
-    // Each frame represents 10 ms of audio. CPU% = total_dsp_time / wallclock_audio_time.
-    let cpu_pct = if frames == 0 {
-        0.0
-    } else {
-        let avg_dsp_ms = (total_ns as f64 / frames as f64) / 1_000_000.0;
-        avg_dsp_ms / 10.0 * 100.0
-    };
-    format!(
-        "NoiseGate ({})\n{}  |  CPU: {:.1}%  peak: {:.1}ms",
+    tooltip_text(
         p.denoiser_name(),
-        if p.is_enabled() { "ON" } else { "BYPASS" },
-        cpu_pct,
+        p.is_enabled(),
+        cpu_percent(frames, total_ns),
         peak_ns as f64 / 1_000_000.0,
     )
+}
+
+/// What the tray should say about the audio, given whether a pipeline exists
+/// and whether the watchdog thinks it has gone quiet.
+fn status_text(running: bool, stalled: bool) -> Option<&'static str> {
+    match (running, stalled) {
+        (true, true) => Some("NoiseGate — no audio from the microphone"),
+        (false, _) => Some("NoiseGate — stopped (pick a microphone)"),
+        // Running and healthy: the caller has real statistics to show instead.
+        (true, false) => None,
+    }
 }
 
 /// Icons are generated procedurally so v1 doesn't need to ship a .ico.
@@ -906,5 +977,217 @@ mod tests {
         // recognisable and the on/off hue still readable.
         let i = (8 * ICON_SIZE + 12) * 4;
         assert_eq!(&bad[i..i + 4], &ACTIVE);
+    }
+
+    // ---- the watchdog -------------------------------------------------
+    //
+    // This is the app's most important safety feature. WASAPI reports a dead
+    // capture stream by simply never signalling again: no error, no callback,
+    // the icon stays teal and the log says "running" while the microphone has
+    // been off the air for a quarter of an hour. Driving `observe` with an
+    // explicit clock is what makes those timings testable at all.
+
+    fn at(base: Instant, secs: f32) -> Instant {
+        base + Duration::from_secs_f32(secs)
+    }
+
+    #[test]
+    fn a_counter_that_keeps_moving_is_never_disturbed() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        for i in 1..=20u64 {
+            let action = h.observe(i, at(base, i as f32));
+            assert_eq!(action, HealthAction::default(), "tick {i} was acted on");
+        }
+        assert!(!h.stalled);
+    }
+
+    /// A quiet room still produces frames — silence is data. Only a frozen
+    /// counter means the stream itself has died.
+    #[test]
+    fn a_brief_gap_is_not_a_stall() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, base);
+        assert_eq!(h.observe(1, at(base, 1.9)), HealthAction::default());
+        assert!(!h.stalled, "1.9s is under the 2s threshold");
+    }
+
+    #[test]
+    fn a_frozen_counter_badges_the_icon_immediately() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, base);
+
+        let action = h.observe(1, at(base, 2.1));
+        assert!(action.redraw, "the icon must stop looking healthy");
+        assert!(h.stalled);
+    }
+
+    /// The badge appears as soon as the stall is detected, but the first
+    /// recovery attempt waits for the recovery interval measured from
+    /// start-up. That grace matters: a device still settling in the first
+    /// seconds after launch should not be torn down and reopened.
+    ///
+    /// A device that dies *later* is not delayed — its last recovery is by
+    /// then long past, so the attempt goes out on the same tick as the badge.
+    #[test]
+    fn recovery_waits_out_the_start_up_grace_but_not_a_later_failure() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, base);
+        assert!(!h.observe(1, at(base, 2.1)).restart, "still within grace");
+        assert!(h.observe(1, at(base, 5.1)).restart, "grace is over");
+
+        // Now the same failure arriving after ten minutes of healthy audio.
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, at(base, 600.0));
+        let action = h.observe(1, at(base, 602.1));
+        assert!(action.redraw && action.restart, "must not wait: {action:?}");
+    }
+
+    /// A device that stays gone must not be reopened every tick.
+    #[test]
+    fn recovery_is_not_attempted_more_than_once_per_interval() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, base);
+
+        assert!(h.observe(1, at(base, 5.1)).restart);
+
+        // Ticks arrive every 500 ms; none of these may retry.
+        for t in [5.6, 6.1, 7.0, 9.0, 10.0] {
+            let action = h.observe(1, at(base, t));
+            assert!(!action.restart, "retried after only {}s", t - 5.1);
+            assert!(!action.redraw, "already badged at 2.1s");
+        }
+
+        // Past the interval, try again.
+        assert!(h.observe(1, at(base, 10.2)).restart);
+    }
+
+    /// The counter moving again is the only evidence of recovery there is.
+    #[test]
+    fn audio_coming_back_clears_the_badge() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        h.observe(1, base);
+        assert!(h.observe(1, at(base, 2.1)).redraw);
+        assert!(h.stalled);
+
+        let action = h.observe(2, at(base, 2.5));
+        assert!(action.redraw, "the badge has to come off");
+        assert!(!action.restart);
+        assert!(!h.stalled);
+
+        // And a later freeze is treated as a fresh stall, not a continuation.
+        assert_eq!(h.observe(2, at(base, 3.0)), HealthAction::default());
+        assert!(h.observe(2, at(base, 4.6)).redraw, "must badge again");
+    }
+
+    /// The first observation happens before any audio has flowed. Starting
+    /// from zero must not read as an immediate stall.
+    #[test]
+    fn a_pipeline_that_has_not_produced_anything_yet_is_given_time() {
+        let base = Instant::now();
+        let mut h = Health::new_at(base);
+        assert_eq!(h.observe(0, base), HealthAction::default());
+        assert_eq!(h.observe(0, at(base, 1.0)), HealthAction::default());
+        // But a pipeline that never produces a single frame is still broken.
+        assert!(h.observe(0, at(base, 2.5)).redraw);
+    }
+
+    // ---- menu choices -------------------------------------------------
+
+    #[test]
+    fn choosing_windows_default_stops_expressing_a_preference() {
+        let mut cfg = Config {
+            microphones: vec!["Yeti".into(), "Webcam".into()],
+            ..Config::default()
+        };
+        choose_microphone(&mut cfg, "");
+        assert!(
+            cfg.microphones.is_empty(),
+            "the default entry means follow Windows, not remember a name"
+        );
+    }
+
+    #[test]
+    fn choosing_a_microphone_promotes_it_above_the_rest() {
+        let mut cfg = Config {
+            microphones: vec!["Yeti".into(), "Webcam".into()],
+            ..Config::default()
+        };
+        choose_microphone(&mut cfg, "Webcam");
+        assert_eq!(cfg.microphones, vec!["Webcam", "Yeti"]);
+    }
+
+    /// Switching to RNNoise and back must not lose where the model was, or
+    /// the user has to configure it again every time they experiment.
+    #[test]
+    fn switching_away_from_the_model_remembers_where_it_was() {
+        let dir = std::env::temp_dir().join(format!("noisegate-tray-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("dfn3.onnx");
+        std::fs::write(&model, b"stand-in").unwrap();
+
+        let mut cfg = Config {
+            model_path: model.to_string_lossy().into_owned(),
+            use_onnx: false,
+            ..Config::default()
+        };
+
+        choose_denoiser(&mut cfg, true);
+        assert!(cfg.use_onnx);
+        assert_eq!(cfg.model_path, model.to_string_lossy());
+
+        choose_denoiser(&mut cfg, false);
+        assert!(!cfg.use_onnx);
+        assert_eq!(
+            cfg.model_path,
+            model.to_string_lossy(),
+            "path was forgotten"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- what the tooltip says ----------------------------------------
+
+    #[test]
+    fn the_cpu_meter_reads_a_tenth_of_realtime_as_ten_percent() {
+        // A frame is 10 ms of audio, so 1 ms of DSP per frame is 10%.
+        assert!((cpu_percent(100, 100 * 1_000_000) - 10.0).abs() < 1e-9);
+        // Exactly keeping up is 100%.
+        assert!((cpu_percent(50, 50 * 10_000_000) - 100.0).abs() < 1e-9);
+        // No frames yet must not divide by zero.
+        assert_eq!(cpu_percent(0, 0), 0.0);
+        assert_eq!(cpu_percent(0, 12_345), 0.0);
+    }
+
+    #[test]
+    fn the_tooltip_says_whether_denoising_is_on() {
+        let on = tooltip_text("DeepFilterNet3", true, 4.25, 1.5);
+        assert!(on.contains("DeepFilterNet3") && on.contains("ON"));
+        assert!(on.contains("4.2") || on.contains("4.3"), "{on}");
+
+        let off = tooltip_text("RNNoise", false, 0.0, 0.0);
+        assert!(off.contains("BYPASS"));
+        assert!(!off.contains("ON  "), "BYPASS must not also read as ON");
+    }
+
+    /// The two states where there are no statistics worth showing have to say
+    /// something useful instead — "stopped" with no hint is a support ticket.
+    #[test]
+    fn a_broken_pipeline_explains_itself_in_the_tooltip() {
+        assert!(status_text(true, true).unwrap().contains("no audio"));
+        assert!(status_text(false, false)
+            .unwrap()
+            .contains("pick a microphone"));
+        assert!(
+            status_text(true, false).is_none(),
+            "a healthy pipeline should show its real statistics"
+        );
     }
 }
