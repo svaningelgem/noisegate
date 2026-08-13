@@ -676,6 +676,48 @@ mod tests {
         }
     }
 
+    /// `Instant::now() - d` panics when the machine has been up for less than
+    /// `d`, and NoiseGate starts at login, so boot is exactly when that
+    /// happens. It shipped once as a "60 seconds ago" sentinel meaning "never
+    /// logged".
+    ///
+    /// It cannot be tested by observation: `Instant` is opaque, has no
+    /// constructor, and the only way to reach the panic is to run on a machine
+    /// whose uptime is genuinely under the offset. A test asserting the
+    /// pipeline builds passes on any developer machine and any CI runner,
+    /// which makes it worse than no test — it looks like a guard and never
+    /// fails. So check the property that is actually checkable: the pattern is
+    /// not in the source. Use `Option<Instant>` (`None` = never) or
+    /// `checked_sub` instead.
+    #[test]
+    fn no_time_arithmetic_on_a_fresh_instant() {
+        let sources = [
+            ("main.rs", include_str!("main.rs")),
+            ("pipeline.rs", include_str!("pipeline.rs")),
+            ("tray.rs", include_str!("tray.rs")),
+            ("offline.rs", include_str!("offline.rs")),
+            ("config.rs", include_str!("config.rs")),
+            ("log_format.rs", include_str!("log_format.rs")),
+        ];
+        // Split so this test does not match its own source when it scans
+        // main.rs — a self-match is a red for the wrong reason.
+        let needle = concat!("Instant::now()", " - ");
+        for (name, src) in sources {
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue; // Prose about the pattern, not the pattern.
+                }
+                assert!(
+                    !line.contains(needle),
+                    "{name}:{} subtracts from a fresh Instant, which panics on a \
+                     machine that has just booted — and NoiseGate starts at login:\n  {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+
     #[test]
     fn is_missing_cable_looks_through_the_whole_chain() {
         let buried = anyhow::Error::new(audio_io::AudioError::VirtualCableMissing)

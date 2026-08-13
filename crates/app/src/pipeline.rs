@@ -517,16 +517,6 @@ mod tests {
         );
     }
 
-    /// A fresh pipeline must not panic on a machine that has just booted —
-    /// which is exactly when NoiseGate starts, since it runs at login. An
-    /// `Instant::now() - 60s` sentinel does panic there.
-    #[test]
-    fn building_a_pipeline_does_not_do_arithmetic_on_a_fresh_instant() {
-        let io = FakeIo::new(test_signal(2));
-        let p = Pipeline::build(&io, config(true), "in", "out");
-        assert!(p.is_ok(), "construction must not depend on system uptime");
-    }
-
     #[test]
     fn frames_processed_counts_what_went_through() {
         let io = FakeIo::new(test_signal(25));

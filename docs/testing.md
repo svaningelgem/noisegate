@@ -66,6 +66,31 @@ workflows download it into `target/debug` before running tests. Locally they
 skip with a message if it is missing; when `CI` is set they fail instead, so
 they cannot silently stop running while the build stays green.
 
+## Things no test guards
+
+Two fixes in this codebase have no test behind them, and it is worth saying so
+rather than leaving a plausible-looking one in place.
+
+**The tray event loop must keep sleeping between ticks.** `ControlFlow::wait_duration`
+is `WaitUntil(now + d)` — a deadline, not a period — so it has to be re-armed on
+every `about_to_wait`. Set once, the loop stops sleeping after the first tick and
+a background app quietly pins a core. Checking this needs a real winit event loop
+and a wall clock; the test would be slow, flaky, and the first one anyone
+disables. The guard is the comment at the re-arm site.
+
+**A fresh `Instant` must never have a `Duration` subtracted from it.** That panics
+when uptime is below the offset, which is exactly when NoiseGate starts, since it
+runs at login. This cannot be tested by observation: `Instant` is opaque, has no
+constructor, and the panic is only reachable on a machine that has genuinely just
+booted — so a test asserting "the pipeline builds" passes everywhere and never
+fails. `no_time_arithmetic_on_a_fresh_instant` in `main.rs` checks the property
+that *is* checkable, by scanning the source for the pattern. Prefer
+`Option<Instant>` (`None` = never) or `checked_sub`.
+
+A regression test that has never been observed to fail is not a regression test.
+When adding one for a bug already fixed, put the bug back, watch the test go red
+for the *right reason*, then restore.
+
 ## Encoding a regression instead of describing one
 
 `CaptureEngine` and `RenderEngine` exist so audio failures can be written down.
