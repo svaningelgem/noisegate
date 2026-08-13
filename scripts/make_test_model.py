@@ -40,9 +40,35 @@ class StreamingContract(torch.nn.Module):
         return enhanced, new_states
 
 
+class MissingStateOutput(torch.nn.Module):
+    """A model that returns enhanced audio but no new state.
+
+    The loader takes outputs positionally, so this is the shape that used to
+    panic mid-stream on `outputs[1]` — an abort in a release build, on the
+    audio thread. It should be refused at load with an explanation instead.
+    """
+
+    def forward(self, input_frame, states, atten_lim_db):
+        return input_frame * (states[0] + 1.0) + atten_lim_db
+
+
 def main() -> None:
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "streaming_contract.onnx")
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    torch.onnx.export(
+        MissingStateOutput(),
+        (
+            torch.zeros(FRAME_SAMPLES),
+            torch.zeros(STATE_LEN),
+            torch.zeros(1),
+        ),
+        str(out.with_name("one_output.onnx")),
+        input_names=["input_frame", "states", "atten_lim_db"],
+        output_names=["enhanced_audio"],
+        dynamic_axes=None,
+        opset_version=17,
+    )
 
     torch.onnx.export(
         StreamingContract(),

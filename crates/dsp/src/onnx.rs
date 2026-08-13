@@ -135,6 +135,18 @@ impl OnnxDenoiser {
             .find(|i| i.name.to_ascii_lowercase().contains("atten"))
             .map(|i| i.name.clone());
 
+        // Outputs are positional, and `process_frame` indexes both. Check the
+        // count here, where there is a user to tell, rather than panicking on
+        // the audio thread — which aborts the process in a release build.
+        if session.outputs.len() < 2 {
+            return Err(DspError::Load(format!(
+                "model has {} output(s); this loader needs two — the enhanced audio and \
+                 the model's new state, in that order. A model without a state output is \
+                 not a streaming model and cannot be run frame at a time",
+                session.outputs.len()
+            )));
+        }
+
         let state_len = declared_len(&session, &states_input).ok_or_else(|| {
             DspError::Load(format!(
                 "could not determine the size of state input '{states_input}'"
@@ -401,6 +413,26 @@ mod tests {
         let mut frame = [0.0f32; FRAME_SAMPLES];
         d.process_frame(&mut frame).unwrap();
         assert_eq!(frame[0], 0.0);
+    }
+
+    /// Outputs are taken positionally, so a model that returns only the
+    /// enhanced audio used to index `outputs[1]` and panic — on the audio
+    /// thread, which aborts the process in a release build. Refuse it at load,
+    /// where there is a user to tell.
+    #[test]
+    fn a_model_that_returns_no_new_state_is_refused_at_load() {
+        if !ort_available() {
+            return;
+        }
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/one_output.onnx");
+        let msg = match OnnxDenoiser::load(&path) {
+            Ok(_) => panic!("a model with one output must not load"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("output"),
+            "the message should say what is wrong with the model: {msg}"
+        );
     }
 
     /// Pointing `model_path` at the wrong file is an ordinary mistake, and the

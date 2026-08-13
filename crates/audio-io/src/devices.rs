@@ -146,8 +146,8 @@ impl DeviceList {
         if matches.next().is_some() {
             // Don't guess which cable gets the microphone.
             return Err(AudioError::AmbiguousDevice(
-                "several virtual cables are installed; set output_device_id in config.toml to \
-                 the one you want"
+                "several virtual cables are installed; set output_device in config.toml to the \
+                 name of the one you want"
                     .into(),
             ));
         }
@@ -361,6 +361,33 @@ mod tests {
         assert_eq!(
             render("CABLE In 16ch (VB-Audio Virtual Cable)").virtual_cable_input(),
             None
+        );
+    }
+
+    /// Error text that names a setting is only useful if the setting exists.
+    /// Devices moved from ids to names; `output_device_id` never came with
+    /// them, so following this advice edited a key nothing reads.
+    #[test]
+    fn the_ambiguous_cable_error_names_a_config_key_that_exists() {
+        let list = DeviceList {
+            capture: vec![],
+            render: vec![
+                render("CABLE Input (VB-Audio Virtual Cable)"),
+                render("VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)"),
+            ],
+        };
+        let msg = list
+            .find_virtual_cable_input()
+            .expect_err("two cables must be ambiguous")
+            .to_string();
+
+        assert!(
+            msg.contains("output_device"),
+            "should say what to set: {msg}"
+        );
+        assert!(
+            !msg.contains("_id"),
+            "config keys are device *names* now, not ids: {msg}"
         );
     }
 

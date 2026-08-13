@@ -9,6 +9,8 @@
 
 pub mod devices;
 pub mod error;
+#[cfg(windows)]
+mod event;
 pub mod format;
 
 #[cfg(windows)]

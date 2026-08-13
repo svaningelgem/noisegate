@@ -163,7 +163,6 @@ impl Pipeline {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_dsp = shutdown.clone();
-        let stats_for_thread = stats.clone();
 
         // DSP thread: pulls from ring A, processes, pushes to ring B.
         let dsp_thread = std::thread::Builder::new()
@@ -171,11 +170,10 @@ impl Pipeline {
             .spawn(move || {
                 #[cfg(windows)]
                 let _mmcss = audio_io::mmcss_pro_audio_for_current_thread();
-                let _ = stats_for_thread; // keep alive via host
-                                          // An empty ring is not news: this thread polls every 2 ms
-                                          // while frames arrive every 10 ms, so it finds nothing most
-                                          // of the time even when everything is healthy. Only a long
-                                          // gap means anything, and that is what gets reported.
+                // An empty ring is not news: this thread polls every 2 ms
+                // while frames arrive every 10 ms, so it finds nothing most
+                // of the time even when everything is healthy. Only a long
+                // gap means anything, and that is what gets reported.
                 let mut last_frame_at = std::time::Instant::now();
                 let mut reported_gap = false;
                 let mut last_drop_log: Option<std::time::Instant> = None;

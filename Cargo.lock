@@ -1314,7 +1314,6 @@ name = "noisegate"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "crossbeam-channel",
  "dirs 5.0.1",
  "hound",
  "muda",
@@ -1322,7 +1321,6 @@ dependencies = [
  "noisegate-dsp",
  "ringbuf",
  "serde",
- "thiserror 1.0.69",
  "toml",
  "tracing",
  "tracing-subscriber",

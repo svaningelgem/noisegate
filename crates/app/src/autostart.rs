@@ -63,31 +63,42 @@ fn open_run_key(access: REG_SAM_FLAGS) -> Result<Key> {
 
 /// Is NoiseGate currently registered to start at login?
 pub fn is_enabled() -> bool {
+    is_entry_enabled(VALUE_NAME)
+}
+
+fn is_entry_enabled(name: PCWSTR) -> bool {
     let Ok(key) = open_run_key(KEY_QUERY_VALUE) else {
         return false;
     };
     // We only care whether the value exists, not what it holds — a stale path
     // from a moved binary still means "the user asked for autostart", and
     // `set(true)` will rewrite it.
-    unsafe { RegQueryValueExW(key.0, VALUE_NAME, None, None, None, None) == ERROR_SUCCESS }
+    unsafe { RegQueryValueExW(key.0, name, None, None, None, None) == ERROR_SUCCESS }
 }
 
 /// Register or unregister start-at-login for the current user.
 pub fn set(enabled: bool) -> Result<()> {
+    set_entry(VALUE_NAME, &exe_path()?, enabled)
+}
+
+/// The value name and the path are arguments rather than baked in so tests can
+/// round-trip against a name of their own. Writing the real one would mean
+/// `cargo test` rewriting the user's autostart to point at the test binary.
+fn set_entry(name: PCWSTR, exe: &Path, enabled: bool) -> Result<()> {
     let key = open_run_key(KEY_SET_VALUE)?;
     let status = if enabled {
-        let value = command_string(&exe_path()?);
+        let value = command_string(exe);
         // REG_SZ wants NUL-terminated UTF-16, handed over as raw bytes.
         let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
         let bytes = unsafe {
             std::slice::from_raw_parts(wide.as_ptr() as *const u8, std::mem::size_of_val(&wide[..]))
         };
-        unsafe { RegSetValueExW(key.0, VALUE_NAME, 0, REG_SZ, Some(bytes)) }
+        unsafe { RegSetValueExW(key.0, name, 0, REG_SZ, Some(bytes)) }
     } else {
-        let status = unsafe { RegDeleteValueW(key.0, VALUE_NAME) };
+        let status = unsafe { RegDeleteValueW(key.0, name) };
         // Deleting something that was never there is a success as far as the
         // caller is concerned.
-        if status != ERROR_SUCCESS && !is_enabled() {
+        if status != ERROR_SUCCESS && !is_entry_enabled(name) {
             ERROR_SUCCESS
         } else {
             status
@@ -97,6 +108,37 @@ pub fn set(enabled: bool) -> Result<()> {
         bail!("writing the Run key failed: error {}", status.0);
     }
     Ok(())
+}
+
+/// Read a Run-key value back as a string. Only the tests need this — the app
+/// never cares what the value holds, only whether it exists.
+#[cfg(test)]
+fn read_entry(name: PCWSTR) -> Option<String> {
+    let key = open_run_key(KEY_QUERY_VALUE).ok()?;
+    let mut size: u32 = 0;
+    unsafe {
+        if RegQueryValueExW(key.0, name, None, None, None, Some(&mut size)) != ERROR_SUCCESS {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if RegQueryValueExW(
+            key.0,
+            name,
+            None,
+            None,
+            Some(buf.as_mut_ptr()),
+            Some(&mut size),
+        ) != ERROR_SUCCESS
+        {
+            return None;
+        }
+        let wide: Vec<u16> = buf
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&c| c != 0)
+            .collect();
+        Some(String::from_utf16_lossy(&wide))
+    }
 }
 
 #[cfg(test)]
@@ -110,23 +152,61 @@ mod tests {
         assert!(cmd.starts_with('"') && cmd.ends_with('"'));
     }
 
-    /// Round-trip against the real registry. It's the user's own HKCU Run key,
-    /// so this is safe, but restore whatever was there before.
+    /// Everything the suite does to the registry, against whichever name the
+    /// caller owns. Tests run in parallel, so each needs its own — sharing one
+    /// makes them race over the same value.
+    fn round_trip(name: PCWSTR) {
+        let exe = Path::new(r"C:\nowhere\noisegate-selftest.exe");
+
+        set_entry(name, exe, true).expect("enable");
+        assert!(
+            is_entry_enabled(name),
+            "should be registered after enabling"
+        );
+
+        set_entry(name, exe, false).expect("disable");
+        assert!(!is_entry_enabled(name), "should be gone after disabling");
+
+        // Disabling something that was never there must not error.
+        set_entry(name, exe, false).expect("disable again");
+    }
+
     #[test]
     fn enabling_and_disabling_round_trips() {
-        let original = is_enabled();
+        round_trip(w!("NoiseGate-selftest-roundtrip"));
+    }
 
-        set(true).expect("enable");
-        assert!(is_enabled(), "should be registered after set(true)");
+    /// The round trip used to call `set(true)`, which writes
+    /// `current_exe()` — under `cargo test` that is the test binary in
+    /// target/debug/deps. Anyone who had autostart switched on and then ran
+    /// the suite got their Run key pointed at a temporary file, so at the
+    /// next login Windows launched nothing.
+    /// `set_entry` must write only the value name it was handed.
+    ///
+    /// Checked *while* the entry exists, not before and after: the round trip
+    /// enables and then disables, so a version that wrote the real name would
+    /// leave no trace by the time it finished, and comparing endpoints would
+    /// see nothing wrong on a machine with no entry of its own.
+    ///
+    /// This deliberately never writes `VALUE_NAME`. An earlier version seeded
+    /// it to simulate a user with autostart on; a failure mid-flight left that
+    /// seed behind, committing the exact harm it was written to prevent.
+    #[test]
+    fn writing_one_entry_never_touches_the_apps_own() {
+        let name = w!("NoiseGate-selftest-isolation");
+        let exe = Path::new(r"C:\nowhere\noisegate-selftest.exe");
+        let before = read_entry(VALUE_NAME);
 
-        set(false).expect("disable");
-        assert!(!is_enabled(), "should be gone after set(false)");
+        set_entry(name, exe, true).expect("enable");
+        let during = read_entry(VALUE_NAME);
+        set_entry(name, exe, false).expect("disable");
 
-        // Disabling twice must not error.
-        set(false).expect("disable again");
-
-        if original {
-            set(true).expect("restore");
-        }
+        assert_eq!(
+            during, before,
+            "writing {:?} also wrote the app's own entry — via `set(true)` that \
+             points the user's Run key at whatever binary is running, which under \
+             `cargo test` is a temporary file in target/debug/deps",
+            "NoiseGate-selftest-isolation"
+        );
     }
 }

@@ -21,13 +21,11 @@ audio-io = { package = "noisegate-audio-io", path = "../audio-io" }
 dsp = { package = "noisegate-dsp", path = "../dsp" }
 
 anyhow.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 toml.workspace = true
 ringbuf.workspace = true
-crossbeam-channel.workspace = true
 
 dirs = "5"
 hound = "3.5"

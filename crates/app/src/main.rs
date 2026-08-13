@@ -102,9 +102,6 @@ fn init_tracing() {
 #[cfg(windows)]
 pub struct StartupProblem {
     pub message: String,
-    /// True when the fix is "install a virtual audio cable", which the tray
-    /// turns into an offer to open the download page.
-    pub missing_cable: bool,
 }
 
 /// Does this error chain bottom out in "no virtual cable installed"?
@@ -287,7 +284,6 @@ fn real_main(has_console: bool) -> Result<()> {
         Err(e) => {
             tracing::error!(error = ?e, "audio pipeline did not start");
             let problem = StartupProblem {
-                missing_cable: false,
                 message: format!("NoiseGate is running, but audio isn't:\n\n{e:#}"),
             };
             (None, Some(problem))

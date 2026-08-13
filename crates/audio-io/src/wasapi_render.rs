@@ -12,7 +12,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Threading::WaitForSingleObject;
 
 use crate::error::{AudioError, Result};
 use crate::wasapi_capture::Frame;
@@ -136,10 +136,10 @@ fn render_loop(
         windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
         init_res.map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
 
-        let event = CreateEventW(None, false, false, PCWSTR::null())
-            .map_err(|e| AudioError::wasapi("CreateEventW", e))?;
+        // Closes itself when this function returns, however it returns.
+        let event = crate::event::Event::new()?;
         client
-            .SetEventHandle(event)
+            .SetEventHandle(event.handle())
             .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
 
         let render_client: IAudioRenderClient = client
@@ -167,7 +167,7 @@ fn render_loop(
         let mut engine = WasapiRenderEngine {
             client: client.clone(),
             render_client,
-            event,
+            event: event.handle(),
             buffer_frames,
         };
         let result = pump(&mut engine, device_rate, device_channels, source, stop);

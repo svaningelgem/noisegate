@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const FRAME_SAMPLES: usize = 480;
-pub const SAMPLE_RATE: u32 = 48_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DspError {

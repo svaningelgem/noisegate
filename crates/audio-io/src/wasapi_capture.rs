@@ -20,7 +20,7 @@ use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Threading::WaitForSingleObject;
 
 use crate::devices::{Device, DeviceDirection, DeviceList};
 use crate::error::{AudioError, Result};
@@ -162,10 +162,10 @@ fn capture_loop(
         windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
         init_res.map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
 
-        let event = CreateEventW(None, false, false, PCWSTR::null())
-            .map_err(|e| AudioError::wasapi("CreateEventW", e))?;
+        // Closes itself when this function returns, however it returns.
+        let event = crate::event::Event::new()?;
         client
-            .SetEventHandle(event)
+            .SetEventHandle(event.handle())
             .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
 
         let cap_client: IAudioCaptureClient = client
@@ -185,7 +185,7 @@ fn capture_loop(
 
         let mut engine = WasapiEngine {
             client: cap_client,
-            event,
+            event: event.handle(),
             channels: device_channels,
         };
         let result = pump(

@@ -132,12 +132,16 @@ mod tests {
             captured(|| tracing::debug!("x")),
             captured(|| tracing::trace!("x")),
         ];
+        // Search past the timestamp. `[  0.123s]` contains a '.', so scanning
+        // the whole line made the TRACE case vacuous: remove its glyph
+        // entirely and the assertion still passed.
         let glyphs: Vec<&str> = lines
             .iter()
             .map(|l| {
+                let after_timestamp = l.split_once(']').map(|(_, rest)| rest).unwrap_or(l);
                 ["✗", "!", "›", "·", "."]
                     .into_iter()
-                    .find(|g| l.contains(g))
+                    .find(|g| after_timestamp.contains(g))
                     .unwrap_or("?")
             })
             .collect();
