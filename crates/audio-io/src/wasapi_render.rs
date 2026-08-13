@@ -75,42 +75,36 @@ fn render_loop(
     stop: &AtomicBool,
     ready_tx: &std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    // COM init for this thread; MTA matches the audio engine's model.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
 
-        let device = if device_id.is_empty() {
-            enumerator
-                .GetDefaultAudioEndpoint(eRender, eCommunications)
-                .map_err(|e| AudioError::wasapi("GetDefaultAudioEndpoint", e))?
-        } else {
-            let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
-            enumerator
-                .GetDevice(PCWSTR::from_raw(wide.as_ptr()))
-                .map_err(|e| AudioError::wasapi("GetDevice", e))?
-        };
+    let device = if device_id.is_empty() {
+        unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eCommunications) }
+            .map_err(|e| AudioError::wasapi("GetDefaultAudioEndpoint", e))?
+    } else {
+        let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { enumerator.GetDevice(PCWSTR::from_raw(wide.as_ptr())) }
+            .map_err(|e| AudioError::wasapi("GetDevice", e))?
+    };
 
-        let client: IAudioClient3 = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(|e| AudioError::wasapi("IMMDevice::Activate", e))?;
+    let client: IAudioClient3 = unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|e| AudioError::wasapi("IMMDevice::Activate", e))?;
 
-        // GetMixFormat may return WAVEFORMATEXTENSIBLE; pass the original
-        // pointer through to Initialize unchanged. Snapshot the fields we
-        // need into Copy locals before freeing.
-        let mix_ptr = client
-            .GetMixFormat()
-            .map_err(|e| AudioError::wasapi("GetMixFormat", e))?;
-        let mix = crate::format::read_mix_format(mix_ptr);
-        let device_rate = mix.sample_rate;
-        let device_channels = mix.channels as usize;
-        let device_block_align = mix.block_align as u32;
+    // Scoped so the engine's format allocation is freed as soon as Initialize
+    // has consumed it, rather than lingering for the life of the stream.
+    let (device_rate, device_channels, device_block_align) = {
+        let mix_ptr =
+            unsafe { client.GetMixFormat() }.map_err(|e| AudioError::wasapi("GetMixFormat", e))?;
+        let format = unsafe { crate::format::EngineMixFormat::from_engine(mix_ptr) };
+        let mix = format.decode();
 
         tracing::info!(
-            device_rate,
-            device_channels,
+            device_rate = mix.sample_rate,
+            device_channels = mix.channels,
             device_bits = mix.bits_per_sample,
             device_is_float = mix.is_float,
             "render device format negotiated"
@@ -120,61 +114,61 @@ fn render_loop(
         // sized at `frames * nBlockAlign` bytes. Those only agree when the
         // device mixes 32-bit float — on a 16-bit device we would write twice
         // the buffer. Refuse the device rather than overrun it.
-        if let Err(e) = mix.validate() {
-            windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
-            return Err(e);
+        mix.validate()?;
+
+        unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                0,
+                0,
+                format.as_ptr(),
+                None,
+            )
         }
+        .map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
 
-        let init_res = client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            0,
-            0,
-            mix_ptr,
-            None,
-        );
-        windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
-        init_res.map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
+        (
+            mix.sample_rate,
+            mix.channels as usize,
+            mix.block_align as u32,
+        )
+    };
 
-        // Closes itself when this function returns, however it returns.
-        let event = crate::event::Event::new()?;
-        client
-            .SetEventHandle(event.handle())
-            .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
+    // Closes itself when this function returns, however it returns.
+    let event = crate::event::Event::new()?;
+    unsafe { client.SetEventHandle(event.handle()) }
+        .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
 
-        let render_client: IAudioRenderClient = client
-            .GetService()
-            .map_err(|e| AudioError::wasapi("GetService(IAudioRenderClient)", e))?;
+    let render_client: IAudioRenderClient = unsafe { client.GetService() }
+        .map_err(|e| AudioError::wasapi("GetService(IAudioRenderClient)", e))?;
 
-        let buffer_frames = client
-            .GetBufferSize()
-            .map_err(|e| AudioError::wasapi("GetBufferSize", e))?;
+    let buffer_frames =
+        unsafe { client.GetBufferSize() }.map_err(|e| AudioError::wasapi("GetBufferSize", e))?;
 
-        let _mmcss = crate::mmcss::ProAudio::set_for_current_thread();
+    let _mmcss = crate::mmcss::ProAudio::set_for_current_thread();
 
-        // Pre-fill with silence so the engine doesn't underrun on the first tick.
-        let prefill = render_client
-            .GetBuffer(buffer_frames)
-            .map_err(|e| AudioError::wasapi("GetBuffer(prefill)", e))?;
-        std::ptr::write_bytes(prefill, 0, (buffer_frames * device_block_align) as usize);
-        render_client
-            .ReleaseBuffer(buffer_frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
-            .map_err(|e| AudioError::wasapi("ReleaseBuffer(prefill)", e))?;
+    // Pre-fill with silence so the engine doesn't underrun on the first tick.
+    let prefill = unsafe { render_client.GetBuffer(buffer_frames) }
+        .map_err(|e| AudioError::wasapi("GetBuffer(prefill)", e))?;
+    unsafe { std::ptr::write_bytes(prefill, 0, (buffer_frames * device_block_align) as usize) };
+    unsafe { render_client.ReleaseBuffer(buffer_frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) }
+        .map_err(|e| AudioError::wasapi("ReleaseBuffer(prefill)", e))?;
 
-        client.Start().map_err(|e| AudioError::wasapi("Start", e))?;
-        let _ = ready_tx.send(Ok(()));
+    unsafe { client.Start() }.map_err(|e| AudioError::wasapi("Start", e))?;
+    let _ = ready_tx.send(Ok(()));
 
-        let mut engine = WasapiRenderEngine {
-            client: client.clone(),
-            render_client,
-            event: event.handle(),
-            buffer_frames,
-        };
-        let result = pump(&mut engine, device_rate, device_channels, source, stop);
+    let mut engine = WasapiRenderEngine {
+        client: client.clone(),
+        render_client,
+        event: event.handle(),
+        buffer_frames,
+        channels: device_channels,
+    };
+    let result = pump(&mut engine, device_rate, device_channels, source, stop);
 
-        let _ = client.Stop();
-        result
-    }
+    let _ = unsafe { client.Stop() };
+    result
 }
 
 /// The audio engine as the render pump uses it.
@@ -190,15 +184,14 @@ pub(crate) trait RenderEngine {
     /// How many frames the engine can take right now.
     fn writable_frames(&mut self) -> Result<u32>;
 
-    /// Hand `fill` a buffer for `frames` frames, then release it back.
+    /// Hand `fill` the engine's buffer for `frames` frames, then release it.
     ///
-    /// # Safety
-    /// `fill` receives a pointer valid for `frames * channels` f32s.
-    unsafe fn with_buffer(
-        &mut self,
-        frames: u32,
-        fill: &mut dyn FnMut(*mut f32) -> usize,
-    ) -> Result<()>;
+    /// The slice is `frames * channels` interleaved samples. Turning the
+    /// engine's pointer into it is the implementation's job — that is the one
+    /// place that knows the buffer is valid for that length, so it is the one
+    /// place that needs `unsafe`.
+    fn with_buffer(&mut self, frames: u32, fill: &mut dyn FnMut(&mut [f32]) -> usize)
+        -> Result<()>;
 }
 
 const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
@@ -240,13 +233,10 @@ pub(crate) fn pump(
 
         let available = needed_src.min(pending.len());
         let mut consumed = 0usize;
-        unsafe {
-            engine.with_buffer(frames_writable, &mut |buf| {
-                consumed =
-                    upconverter.write_into(&pending[..available], buf, frames_writable as usize);
-                consumed
-            })?;
-        }
+        engine.with_buffer(frames_writable, &mut |buf| {
+            consumed = upconverter.write_into(&pending[..available], buf);
+            consumed
+        })?;
         // Drop the source samples we used.
         pending.drain(..consumed);
     }
@@ -258,6 +248,8 @@ struct WasapiRenderEngine {
     render_client: IAudioRenderClient,
     event: windows::Win32::Foundation::HANDLE,
     buffer_frames: u32,
+    /// Needed to size the engine's buffer as a slice.
+    channels: usize,
 }
 
 impl RenderEngine for WasapiRenderEngine {
@@ -271,18 +263,19 @@ impl RenderEngine for WasapiRenderEngine {
         Ok(self.buffer_frames.saturating_sub(padding))
     }
 
-    unsafe fn with_buffer(
+    fn with_buffer(
         &mut self,
         frames: u32,
-        fill: &mut dyn FnMut(*mut f32) -> usize,
+        fill: &mut dyn FnMut(&mut [f32]) -> usize,
     ) -> Result<()> {
-        let buf = self
-            .render_client
-            .GetBuffer(frames)
+        // The engine sized this at `frames * nBlockAlign` bytes, and the mix
+        // format was validated as 32-bit float before Initialize, so this many
+        // f32s is exactly what it allocated.
+        let len = frames as usize * self.channels;
+        let buf = unsafe { self.render_client.GetBuffer(frames) }
             .map_err(|e| AudioError::wasapi("GetBuffer", e))?;
-        fill(buf as *mut f32);
-        self.render_client
-            .ReleaseBuffer(frames, 0)
+        fill(unsafe { std::slice::from_raw_parts_mut(buf as *mut f32, len) });
+        unsafe { self.render_client.ReleaseBuffer(frames, 0) }
             .map_err(|e| AudioError::wasapi("ReleaseBuffer", e))
     }
 }
@@ -317,12 +310,18 @@ impl UpConverter {
         }
     }
 
-    /// Linearly resample mono `src` (48 kHz) into `frames` device-rate
-    /// frames written to `dst` (interleaved, dst_channels). Returns the
-    /// number of source samples consumed so the caller can advance.
-    unsafe fn write_into(&mut self, src: &[f32], dst: *mut f32, frames: usize) -> usize {
+    /// Linearly resample mono `src` (48 kHz) into `dst`, which is one engine
+    /// buffer: `frames * dst_channels` interleaved samples. Returns the number
+    /// of source samples consumed so the caller can advance.
+    ///
+    /// Takes a slice rather than a raw pointer deliberately. Only the engine
+    /// knows how big its buffer is, so that is where the pointer belongs; the
+    /// resampling itself has no business being unsafe, and as a safe function
+    /// it can be tested without wrapping every call in an `unsafe` block.
+    fn write_into(&mut self, src: &[f32], dst: &mut [f32]) -> usize {
+        let frames = dst.len() / self.dst_channels.max(1);
         if src.is_empty() {
-            std::ptr::write_bytes(dst, 0, frames * self.dst_channels);
+            dst.fill(0.0);
             return 0;
         }
         let ratio = self.src_rate as f64 / self.dst_rate as f64;
@@ -338,7 +337,7 @@ impl UpConverter {
             let b = src.get(idx).copied().unwrap_or(self.last);
             let s = (a as f64 + (b as f64 - a as f64) * frac) as f32;
             for c in 0..self.dst_channels {
-                *dst.add(f * self.dst_channels + c) = s;
+                dst[f * self.dst_channels + c] = s;
             }
         }
         // Advance phase past the samples we used; keep the fractional part
@@ -403,14 +402,14 @@ mod pump_tests {
             }
         }
 
-        unsafe fn with_buffer(
+        fn with_buffer(
             &mut self,
             frames: u32,
-            fill: &mut dyn FnMut(*mut f32) -> usize,
+            fill: &mut dyn FnMut(&mut [f32]) -> usize,
         ) -> Result<()> {
             // NaN-filled so an unwritten tail is visible rather than plausible.
             let mut buf = vec![f32::NAN; frames as usize * self.channels];
-            fill(buf.as_mut_ptr());
+            fill(&mut buf);
             assert!(
                 !buf.iter().any(|s| s.is_nan()),
                 "the engine buffer was left partly unwritten — the device would \
@@ -568,7 +567,7 @@ mod tests {
     /// what landed there: returns (interleaved output, source samples used).
     fn render(uc: &mut UpConverter, src: &[f32], frames: usize) -> (Vec<f32>, usize) {
         let mut buf = vec![f32::NAN; frames * uc.dst_channels];
-        let consumed = unsafe { uc.write_into(src, buf.as_mut_ptr(), frames) };
+        let consumed = uc.write_into(src, &mut buf);
         assert!(
             !buf.iter().any(|s| s.is_nan()),
             "left part of the engine buffer uninitialised — the engine would \

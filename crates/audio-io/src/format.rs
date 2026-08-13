@@ -66,6 +66,48 @@ impl MixFormat {
     }
 }
 
+/// The `WAVEFORMATEX` the audio engine allocated for us, freed on drop.
+///
+/// `GetMixFormat` hands over a `CoTaskMem` allocation that the caller owns.
+/// Freeing it by hand meant a `CoTaskMemFree` on the validation-failure path
+/// and another after `Initialize`, in each of two files — four chances to
+/// leak, and each new early return added a fifth.
+///
+/// The original pointer has to be handed back to `Initialize` unchanged: on
+/// most devices this is really a `WAVEFORMATEXTENSIBLE`, and copying it into
+/// an 18-byte `WAVEFORMATEX` truncates the extensible tail, which the engine
+/// rejects with `E_INVALIDARG`. So the guard lends the pointer out rather than
+/// owning a decoded copy.
+#[cfg(windows)]
+pub(crate) struct EngineMixFormat(*mut windows::Win32::Media::Audio::WAVEFORMATEX);
+
+#[cfg(windows)]
+impl EngineMixFormat {
+    /// # Safety
+    /// `ptr` must be the `CoTaskMem` allocation returned by `GetMixFormat`,
+    /// and must not be freed by anyone else.
+    pub unsafe fn from_engine(ptr: *mut windows::Win32::Media::Audio::WAVEFORMATEX) -> Self {
+        Self(ptr)
+    }
+
+    pub fn decode(&self) -> MixFormat {
+        // Safe by this type's invariant: we own a valid engine allocation.
+        unsafe { read_mix_format(self.0) }
+    }
+
+    /// The untouched pointer, for handing back to `Initialize`.
+    pub fn as_ptr(&self) -> *const windows::Win32::Media::Audio::WAVEFORMATEX {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EngineMixFormat {
+    fn drop(&mut self) {
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(self.0 as _)) }
+    }
+}
+
 /// Read the mix format out of a `GetMixFormat` pointer.
 ///
 /// # Safety
@@ -74,7 +116,7 @@ impl MixFormat {
 /// extensible tail is present, but we check `cbSize` before reading it
 /// anyway rather than take that on faith.
 #[cfg(windows)]
-pub unsafe fn read_mix_format(ptr: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> MixFormat {
+unsafe fn read_mix_format(ptr: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> MixFormat {
     use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
     use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
     use windows::Win32::Media::Multimedia::{

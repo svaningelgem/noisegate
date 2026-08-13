@@ -88,12 +88,15 @@ fn set_entry(name: PCWSTR, exe: &Path, enabled: bool) -> Result<()> {
     let key = open_run_key(KEY_SET_VALUE)?;
     let status = if enabled {
         let value = command_string(exe);
-        // REG_SZ wants NUL-terminated UTF-16, handed over as raw bytes.
-        let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
-        let bytes = unsafe {
-            std::slice::from_raw_parts(wide.as_ptr() as *const u8, std::mem::size_of_val(&wide[..]))
-        };
-        unsafe { RegSetValueExW(key.0, name, 0, REG_SZ, Some(bytes)) }
+        // REG_SZ wants NUL-terminated UTF-16, handed over as raw bytes. Built
+        // little-endian by hand rather than reinterpreting a &[u16] — same
+        // bytes on every target Windows runs on, and no unsafe.
+        let bytes: Vec<u8> = value
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        unsafe { RegSetValueExW(key.0, name, 0, REG_SZ, Some(&bytes)) }
     } else {
         let status = unsafe { RegDeleteValueW(key.0, name) };
         // Deleting something that was never there is a success as far as the

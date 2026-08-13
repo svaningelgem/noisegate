@@ -95,110 +95,99 @@ fn capture_loop(
     stop: &AtomicBool,
     ready_tx: &std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
-    unsafe {
-        // COM init for this thread. STA isn't required for WASAPI; MTA is
-        // simpler and matches the audio engine's threading model.
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    // COM init for this thread. STA isn't required for WASAPI; MTA is simpler
+    // and matches the audio engine's threading model.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
 
-        let device = find_device(&enumerator, device_id, eCapture)?;
+    let device = find_device(&enumerator, device_id, eCapture)?;
 
-        let client: IAudioClient3 = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(|e| AudioError::wasapi("IMMDevice::Activate", e))?;
+    let client: IAudioClient3 = unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|e| AudioError::wasapi("IMMDevice::Activate", e))?;
 
-        // GetMixFormat returns a CoTaskMem-allocated WAVEFORMATEX. On most
-        // devices this is actually a WAVEFORMATEXTENSIBLE (40 bytes, with
-        // cbSize > 0). We MUST pass the original pointer back to Initialize
-        // — copying it into a 18-byte WAVEFORMATEX truncates the extensible
-        // header and the engine rejects it with E_INVALIDARG.
-        let mix_ptr = client
-            .GetMixFormat()
-            .map_err(|e| AudioError::wasapi("GetMixFormat", e))?;
+    // Scoped so the engine's format allocation is freed as soon as Initialize
+    // has consumed it, rather than lingering for the life of the stream.
+    let (device_rate, device_channels, needs_convert) = {
+        // GetMixFormat returns a CoTaskMem allocation we own. On most devices
+        // it is really a WAVEFORMATEXTENSIBLE (40 bytes, cbSize > 0), and the
+        // original pointer MUST go back to Initialize unchanged — copying it
+        // into an 18-byte WAVEFORMATEX truncates the extensible header and the
+        // engine rejects it with E_INVALIDARG.
+        let mix_ptr =
+            unsafe { client.GetMixFormat() }.map_err(|e| AudioError::wasapi("GetMixFormat", e))?;
+        let format = unsafe { crate::format::EngineMixFormat::from_engine(mix_ptr) };
+        let mix = format.decode();
+        let needs_convert = !(mix.sample_rate == SAMPLE_RATE && mix.channels == 1);
 
-        // Snapshot the fields we need into locals (Copy), so we can drop
-        // the pointer after Initialize and not worry about packed-struct
-        // unaligned-reference issues elsewhere in the loop.
-        let mix = crate::format::read_mix_format(mix_ptr);
-        let device_rate = mix.sample_rate;
-        let device_channels = mix.channels as usize;
-        let needs_convert = !(device_rate == SAMPLE_RATE && device_channels == 1);
-
-        // Always log the chosen format — useful for diagnosing "init OK but
-        // no data" issues which are usually privacy permissions or wrong
-        // device picks.
+        // Always log the chosen format — useful for diagnosing "init OK but no
+        // data", which is usually privacy permissions or a wrong device pick.
         tracing::info!(
-            device_rate,
-            device_channels,
+            device_rate = mix.sample_rate,
+            device_channels = mix.channels,
             device_bits = mix.bits_per_sample,
             device_is_float = mix.is_float,
             needs_convert,
             "capture device format negotiated"
         );
 
-        // The loop below reinterprets the engine's byte buffer as `[f32]`, so
-        // bail out before Initialize if this device doesn't actually mix
-        // 32-bit float. Free the format first — we own that allocation.
-        if let Err(e) = mix.validate() {
-            windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
-            return Err(e);
-        }
+        // The pump reinterprets the engine's byte buffer as `[f32]`, so bail
+        // out before Initialize if this device doesn't actually mix 32-bit
+        // float. The allocation is freed by the guard either way.
+        mix.validate()?;
 
         // Legacy Initialize — accepts the device's native (possibly
-        // extensible) mix format reliably. Buffer duration 0 = engine
-        // default (~30 ms), fine for voice.
-        let init_res = client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            0,       // hnsBufferDuration
-            0,       // hnsPeriodicity (must be 0 in shared mode)
-            mix_ptr, // pass the original pointer through
-            None,
-        );
-        // Always free the format pointer, regardless of success/failure.
-        windows::Win32::System::Com::CoTaskMemFree(Some(mix_ptr as _));
-        init_res.map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
+        // extensible) mix format reliably. Buffer duration 0 = engine default
+        // (~30 ms), fine for voice.
+        unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                0, // hnsBufferDuration
+                0, // hnsPeriodicity (must be 0 in shared mode)
+                format.as_ptr(),
+                None,
+            )
+        }
+        .map_err(|e| AudioError::wasapi("IAudioClient::Initialize", e))?;
 
-        // Closes itself when this function returns, however it returns.
-        let event = crate::event::Event::new()?;
-        client
-            .SetEventHandle(event.handle())
-            .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
+        (mix.sample_rate, mix.channels as usize, needs_convert)
+    };
 
-        let cap_client: IAudioCaptureClient = client
-            .GetService()
-            .map_err(|e| AudioError::wasapi("GetService(IAudioCaptureClient)", e))?;
+    // Closes itself when this function returns, however it returns.
+    let event = crate::event::Event::new()?;
+    unsafe { client.SetEventHandle(event.handle()) }
+        .map_err(|e| AudioError::wasapi("SetEventHandle", e))?;
 
-        // MMCSS: ask the scheduler to treat this as Pro Audio. Without this,
-        // we'll get random scheduling delays under load and audible glitches.
-        let _mmcss = crate::mmcss::ProAudio::set_for_current_thread();
+    let cap_client: IAudioCaptureClient = unsafe { client.GetService() }
+        .map_err(|e| AudioError::wasapi("GetService(IAudioCaptureClient)", e))?;
 
-        client
-            .Start()
-            .map_err(|e| AudioError::wasapi("IAudioClient::Start", e))?;
+    // MMCSS: ask the scheduler to treat this as Pro Audio. Without it we get
+    // random scheduling delays under load and audible glitches.
+    let _mmcss = crate::mmcss::ProAudio::set_for_current_thread();
 
-        // Init succeeded — unblock the caller.
-        let _ = ready_tx.send(Ok(()));
+    unsafe { client.Start() }.map_err(|e| AudioError::wasapi("IAudioClient::Start", e))?;
 
-        let mut engine = WasapiEngine {
-            client: cap_client,
-            event: event.handle(),
-            channels: device_channels,
-        };
-        let result = pump(
-            &mut engine,
-            device_channels,
-            needs_convert.then_some(device_rate),
-            sink,
-            stop,
-        );
+    // Init succeeded — unblock the caller.
+    let _ = ready_tx.send(Ok(()));
 
-        let _ = client.Stop();
-        result
-    }
+    let mut engine = WasapiEngine {
+        client: cap_client,
+        event: event.handle(),
+        channels: device_channels,
+    };
+    let result = pump(
+        &mut engine,
+        device_channels,
+        needs_convert.then_some(device_rate),
+        sink,
+        stop,
+    );
+
+    let _ = unsafe { client.Stop() };
+    result
 }
 
 /// The audio engine as the capture pump uses it.
@@ -357,45 +346,39 @@ impl CaptureEngine for WasapiEngine {
 
 /// Public for `devices::DeviceList::enumerate()`.
 pub(crate) fn enumerate_all() -> Result<DeviceList> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&CLSID_MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|e| AudioError::wasapi("CoCreateInstance(MMDeviceEnumerator)", e))?;
 
-        Ok(DeviceList {
-            capture: enumerate_direction(&enumerator, eCapture)?,
-            render: enumerate_direction(&enumerator, eRender)?,
-        })
-    }
+    Ok(DeviceList {
+        capture: enumerate_direction(&enumerator, eCapture)?,
+        render: enumerate_direction(&enumerator, eRender)?,
+    })
 }
 
-unsafe fn enumerate_direction(
-    enumerator: &IMMDeviceEnumerator,
-    flow: EDataFlow,
-) -> Result<Vec<Device>> {
-    let coll = enumerator
-        .EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)
+/// These three take live COM objects and impose no extra contract on the
+/// caller, so they are safe functions that use `unsafe` internally rather than
+/// `unsafe fn`s that push the obligation outward. Only the FFI calls are
+/// marked, which is what makes the marks worth reading.
+fn enumerate_direction(enumerator: &IMMDeviceEnumerator, flow: EDataFlow) -> Result<Vec<Device>> {
+    let coll = unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) }
         .map_err(|e| AudioError::wasapi("EnumAudioEndpoints", e))?;
 
-    let default_id = enumerator
-        .GetDefaultAudioEndpoint(flow, eCommunications)
+    let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(flow, eCommunications) }
         .ok()
-        .and_then(|d| d.GetId().ok())
-        .map(|p| p.to_string().unwrap_or_default())
+        .and_then(|d| unsafe { d.GetId() }.ok())
+        .map(|p| unsafe { p.to_string() }.unwrap_or_default())
         .unwrap_or_default();
 
-    let count = coll
-        .GetCount()
-        .map_err(|e| AudioError::wasapi("GetCount", e))?;
+    let count = unsafe { coll.GetCount() }.map_err(|e| AudioError::wasapi("GetCount", e))?;
     let mut out = Vec::with_capacity(count as usize);
     for i in 0..count {
-        let dev = coll.Item(i).map_err(|e| AudioError::wasapi("Item", e))?;
-        let id = dev
-            .GetId()
-            .map_err(|e| AudioError::wasapi("GetId", e))?
-            .to_string()
-            .unwrap_or_default();
+        let dev = unsafe { coll.Item(i) }.map_err(|e| AudioError::wasapi("Item", e))?;
+        let id = unsafe {
+            let raw = dev.GetId().map_err(|e| AudioError::wasapi("GetId", e))?;
+            raw.to_string().unwrap_or_default()
+        };
         let friendly_name = read_friendly_name(&dev).unwrap_or_else(|_| id.clone());
         out.push(Device {
             is_default: id == default_id,
@@ -410,31 +393,23 @@ unsafe fn enumerate_direction(
     Ok(out)
 }
 
-unsafe fn read_friendly_name(dev: &IMMDevice) -> Result<String> {
-    let store = dev
-        .OpenPropertyStore(STGM_READ)
+fn read_friendly_name(dev: &IMMDevice) -> Result<String> {
+    let store = unsafe { dev.OpenPropertyStore(STGM_READ) }
         .map_err(|e| AudioError::wasapi("OpenPropertyStore", e))?;
     // windows 0.58: GetValue returns the PROPVARIANT directly.
-    let prop = store
-        .GetValue(&PKEY_Device_FriendlyName)
+    let prop = unsafe { store.GetValue(&PKEY_Device_FriendlyName) }
         .map_err(|e| AudioError::wasapi("GetValue(FriendlyName)", e))?;
     // PROPVARIANT for a string is VT_LPWSTR; Display impl decodes it.
     Ok(prop.to_string())
 }
 
-unsafe fn find_device(
-    enumerator: &IMMDeviceEnumerator,
-    id: &str,
-    flow: EDataFlow,
-) -> Result<IMMDevice> {
+fn find_device(enumerator: &IMMDeviceEnumerator, id: &str, flow: EDataFlow) -> Result<IMMDevice> {
     if id.is_empty() || id == "default" {
-        return enumerator
-            .GetDefaultAudioEndpoint(flow, eCommunications)
+        return unsafe { enumerator.GetDefaultAudioEndpoint(flow, eCommunications) }
             .map_err(|e| AudioError::wasapi("GetDefaultAudioEndpoint", e));
     }
     let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
-    enumerator
-        .GetDevice(PCWSTR::from_raw(wide.as_ptr()))
+    unsafe { enumerator.GetDevice(PCWSTR::from_raw(wide.as_ptr())) }
         .map_err(|e| AudioError::wasapi("GetDevice", e))
 }
 
