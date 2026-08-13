@@ -80,6 +80,13 @@ impl Pipeline {
     /// testable.
     fn resolve_devices(snapshot: &Config) -> Result<(String, String)> {
         let devices = DeviceList::enumerate().context("enumerating audio devices")?;
+        Self::pick_devices(&devices, snapshot)
+    }
+
+    /// Choose input and output from a device inventory. Separate from the
+    /// enumeration so the rules — ranking, the feedback-loop guard, failing
+    /// closed when there is no cable — can be tested without a sound card.
+    fn pick_devices(devices: &DeviceList, snapshot: &Config) -> Result<(String, String)> {
         // Config names devices; ids are an internal detail resolved here,
         // fresh on every start and every restart.
         let input = devices
@@ -474,6 +481,111 @@ mod tests {
         let second = p.frames_processed();
         assert!(first > 0, "should have processed the frames it was given");
         assert_eq!(first, second, "counter advanced after capture went silent");
+    }
+
+    fn device(
+        name: &str,
+        direction: audio_io::devices::DeviceDirection,
+    ) -> audio_io::devices::Device {
+        audio_io::devices::Device {
+            id: format!("{{0.0.0.00000000}}.{name}"),
+            friendly_name: name.into(),
+            direction,
+            is_default: false,
+        }
+    }
+
+    /// The first entry in each list is the Windows default, as it would be on
+    /// a real machine — without one, "follow the default" resolves to nothing.
+    fn inventory(mics: &[&str], outputs: &[&str]) -> DeviceList {
+        use audio_io::devices::DeviceDirection::{Capture, Render};
+        let mark_first = |mut devices: Vec<audio_io::devices::Device>| {
+            if let Some(d) = devices.first_mut() {
+                d.is_default = true;
+            }
+            devices
+        };
+        DeviceList {
+            capture: mark_first(mics.iter().map(|n| device(n, Capture)).collect()),
+            render: mark_first(outputs.iter().map(|n| device(n, Render)).collect()),
+        }
+    }
+
+    fn with_mics(mics: &[&str]) -> Config {
+        Config {
+            microphones: mics.iter().map(|s| s.to_string()).collect(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn the_highest_ranked_microphone_that_is_present_wins() {
+        let devices = inventory(
+            &["Webcam Mic", "Yeti"],
+            &["CABLE Input (VB-Audio Virtual Cable)"],
+        );
+        let (input, output) =
+            Pipeline::pick_devices(&devices, &with_mics(&["Yeti", "Webcam Mic"])).unwrap();
+        assert!(input.ends_with("Yeti"), "got {input}");
+        assert!(output.contains("CABLE Input"));
+
+        // Unplug the Yeti: the next one down takes over rather than failing.
+        let devices = inventory(&["Webcam Mic"], &["CABLE Input (VB-Audio Virtual Cable)"]);
+        let (input, _) =
+            Pipeline::pick_devices(&devices, &with_mics(&["Yeti", "Webcam Mic"])).unwrap();
+        assert!(input.ends_with("Webcam Mic"), "got {input}");
+    }
+
+    /// Installing a cable usually makes it the default capture device too, so
+    /// "follow the Windows default" silently becomes the cable feeding itself.
+    /// Nothing real is in that loop and the user hears nothing.
+    #[test]
+    fn capturing_from_the_cables_own_output_is_refused() {
+        let devices = inventory(
+            &["CABLE Output (VB-Audio Virtual Cable)"],
+            &["CABLE Input (VB-Audio Virtual Cable)"],
+        );
+        let err = Pipeline::pick_devices(&devices, &Config::default())
+            .expect_err("must not wire the cable to itself");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("loop"), "should explain the loop: {msg}");
+        assert!(msg.contains("tray menu"), "should say how to fix it: {msg}");
+    }
+
+    /// Failing closed matters here: falling back to the default render device
+    /// would play the microphone out of whatever speakers or meeting-room
+    /// display happens to be default.
+    #[test]
+    fn no_cable_is_an_error_rather_than_a_fallback_to_the_speakers() {
+        let devices = inventory(&["Yeti"], &["Speakers (Realtek)", "Headphones"]);
+        let err = Pipeline::pick_devices(&devices, &with_mics(&["Yeti"]))
+            .expect_err("must not fall back to the speakers");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("VB-Cable"), "{msg}");
+        assert!(
+            !msg.contains("Speakers"),
+            "picked the speakers anyway: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_microphone_at_all_is_reported_as_such() {
+        let devices = inventory(&[], &["CABLE Input (VB-Audio Virtual Cable)"]);
+        let err = Pipeline::pick_devices(&devices, &Config::default()).unwrap_err();
+        assert!(format!("{err:#}").contains("no microphone"));
+    }
+
+    /// A named output wins over auto-detection — the escape hatch for anyone
+    /// running a cable we do not recognise.
+    #[test]
+    fn a_named_output_device_overrides_cable_detection() {
+        let devices = inventory(&["Yeti"], &["Line 1 (Some Other Cable)"]);
+        let cfg = Config {
+            output_device: "Line 1 (Some Other Cable)".into(),
+            ..with_mics(&["Yeti"])
+        };
+        let (_, output) = Pipeline::pick_devices(&devices, &cfg).unwrap();
+        assert!(output.contains("Line 1"), "got {output}");
     }
 
     #[test]

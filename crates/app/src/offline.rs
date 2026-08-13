@@ -319,4 +319,90 @@ mod tests {
         let p = LevelProfile::measure(&[]);
         assert!(p.floor_db < -100.0 && p.speech_db < -100.0);
     }
+
+    /// Float WAVs come out of most editors; ints come out of `--record`. Both
+    /// have to load, and land at the same amplitude.
+    #[test]
+    fn float_wavs_load_at_the_same_scale_as_int_ones() {
+        let dir = std::env::temp_dir().join(format!("noisegate-f32-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("float.wav");
+
+        let spec = hound::WavSpec {
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+            ..wav_spec()
+        };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        for s in [0.0f32, 0.5, -0.5, 1.0] {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+
+        assert_eq!(read_wav(&path).unwrap(), vec![0.0, 0.5, -0.5, 1.0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `--denoise` path, end to end: a noisy file in, a quieter one out,
+    /// same length. Runs on the built-in RNNoise so it needs no model file.
+    #[test]
+    fn denoising_a_file_drops_the_noise_floor_and_keeps_the_length() {
+        let dir = std::env::temp_dir().join(format!("noisegate-denoise-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (input, output) = (dir.join("in.wav"), dir.join("out.wav"));
+
+        // Two seconds of white noise. Deliberately not a tone: a denoiser is
+        // free to keep a tone, but hiss is exactly what it exists to remove.
+        // Deterministic LCG rather than a rand dependency for one test.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let noisy: Vec<f32> = (0..SAMPLE_RATE as usize * 2)
+            .map(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((seed >> 33) as f32 / (1u64 << 31) as f32 - 1.0) * 0.2
+            })
+            .collect();
+        write_wav(&input, &noisy).unwrap();
+
+        denoise_file(&input, &output, None, 0.0).unwrap();
+
+        let cleaned = read_wav(&output).unwrap();
+        assert_eq!(cleaned.len(), noisy.len(), "length must be preserved");
+
+        let before = LevelProfile::measure(&noisy);
+        let after = LevelProfile::measure(&cleaned);
+        assert!(
+            after.floor_db < before.floor_db - 6.0,
+            "expected the hiss to drop: {:.1} -> {:.1} dB",
+            before.floor_db,
+            after.floor_db
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A partial final frame must still reach the output. Zero-padding it and
+    /// then writing the whole padded frame would lengthen the file.
+    #[test]
+    fn a_file_that_is_not_a_whole_number_of_frames_keeps_its_length() {
+        let dir = std::env::temp_dir().join(format!("noisegate-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (input, output) = (dir.join("in.wav"), dir.join("out.wav"));
+
+        let odd = FRAME_SAMPLES * 3 + 7;
+        write_wav(&input, &vec![0.1f32; odd]).unwrap();
+        denoise_file(&input, &output, None, 0.0).unwrap();
+
+        assert_eq!(read_wav(&output).unwrap().len(), odd);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn denoising_a_file_that_is_not_there_says_so() {
+        let missing = std::env::temp_dir().join("noisegate-nope/in.wav");
+        let err = denoise_file(&missing, &missing.with_file_name("out.wav"), None, 0.0)
+            .expect_err("must not pretend to succeed");
+        assert!(
+            format!("{err:#}").contains("in.wav"),
+            "the message should name the file: {err:#}"
+        );
+    }
 }

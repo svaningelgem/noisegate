@@ -56,3 +56,25 @@ fn enable_vt_processing() {
 
 #[cfg(not(windows))]
 fn enable_vt_processing() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The banner is the first thing a CLI user sees. Wrapping ruins it, and
+    /// the box-drawing characters are multi-byte, so counting bytes lies.
+    #[test]
+    fn the_banner_fits_an_80_column_terminal() {
+        for line in ASCII_ART.lines() {
+            let width = line.chars().count();
+            assert!(width <= 80, "{width} columns: {line}");
+        }
+    }
+
+    #[test]
+    fn printing_the_banner_works_without_a_console() {
+        // Under the test harness stdout is a pipe, so `enable_vt_processing`
+        // takes its failure path. It must not panic on the way through.
+        print();
+    }
+}

@@ -352,11 +352,15 @@ where
 }
 
 fn print_help() {
-    println!(
-        "NoiseGate — real-time mic noise cancellation\n\
+    println!("{HELP}");
+}
+
+const HELP: &str = "NoiseGate — real-time mic noise cancellation\n\
          \n\
          USAGE:\n\
              noisegate.exe [OPTIONS]\n\
+         \n\
+         With no options it starts in the tray and cleans your microphone.\n\
          \n\
          OPTIONS:\n\
              --list-devices         Print all input/output devices and exit.\n\
@@ -364,13 +368,27 @@ fn print_help() {
                                     SUBSTRING (case-insensitive). Useful when your\n\
                                     default mic is a Bluetooth headset and you want\n\
                                     a USB mic instead.\n\
+             --record <SECS> <WAV>  Record from the chosen mic straight to a WAV file.\n\
+             --denoise <IN> <OUT>   Clean up an existing mono 48 kHz WAV file.\n\
+             --model <FILE.onnx>    Use this ONNX model for --denoise.\n\
+             --atten <DB>           Attenuation limit for models that support one.\n\
              -h, --help             Show this help.\n\
          \n\
          CONFIG FILE:\n\
-             %APPDATA%\\NoiseGate\\config.toml — `input_device_id` / `output_device_id`\n\
-             can be set there for a permanent choice.\n"
-    );
-}
+             %APPDATA%\\NoiseGate\\config.toml\n\
+             \n\
+             microphones     list of mic names, best first; falls down the list\n\
+                             as devices come and go, Windows' default is the\n\
+                             final fallback\n\
+             output_device   where cleaned audio goes; empty auto-detects the\n\
+                             virtual cable\n\
+             enabled         master on/off\n\
+             use_onnx        run the high-quality model rather than RNNoise\n\
+             model_path      where that model lives\n\
+             attenuation_db  how hard to suppress, 6 = subtle, 100 = maximum\n\
+             \n\
+             Devices are named, not numbered: ids are opaque GUIDs that change\n\
+             whenever you replug the device.\n";
 
 #[cfg(windows)]
 fn list_devices() -> Result<()> {
@@ -472,8 +490,14 @@ mod single_instance {
     /// account doesn't have. One tray per login session is what we actually
     /// want anyway.
     pub fn acquire() -> Result<Lock, AlreadyRunning> {
+        acquire_named(w!("Local\\NoiseGate.SingleInstance"))
+    }
+
+    /// Split out so tests can contend on a name of their own rather than on
+    /// the real one — which the user's actual tray may be holding.
+    fn acquire_named(name: windows::core::PCWSTR) -> Result<Lock, AlreadyRunning> {
         unsafe {
-            let h = match CreateMutexW(None, true, w!("Local\\NoiseGate.SingleInstance")) {
+            let h = match CreateMutexW(None, true, name) {
                 Ok(h) => h,
                 Err(e) => {
                     // We can't tell whether we're alone. Starting anyway is
@@ -490,6 +514,38 @@ mod single_instance {
                 return Err(AlreadyRunning);
             }
             Ok(Lock(h))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The whole point of the feature: the second tray must lose, and the
+        /// name must free up once the winner exits.
+        #[test]
+        fn only_one_holder_at_a_time() {
+            let name = w!("Local\\NoiseGate.SingleInstance.test");
+
+            let first = acquire_named(name).expect("nothing else holds the test name");
+            assert!(
+                acquire_named(name).is_err(),
+                "a second instance must bow out"
+            );
+
+            drop(first);
+            assert!(
+                acquire_named(name).is_ok(),
+                "the name must be reusable after the holder exits, or a crash \
+                 would lock the user out until they log off"
+            );
+        }
+
+        /// A null handle is what `acquire` returns when the mutex could not be
+        /// created at all. Dropping it must not try to close it.
+        #[test]
+        fn dropping_a_lock_we_never_opened_is_harmless() {
+            drop(Lock(HANDLE::default()));
         }
     }
 }
@@ -561,5 +617,77 @@ mod tests {
         let listed = parse_args_from(["--list-devices", "--nonsense"]);
         assert!(listed.list_devices);
         assert!(listed.mic.is_none());
+    }
+
+    #[test]
+    fn cli_parses_the_two_argument_flags() {
+        let a = parse_args_from(["--record", "60", "out.wav"]);
+        assert_eq!(a.record, Some((60.0, "out.wav".to_string())));
+
+        let b = parse_args_from(["--denoise", "in.wav", "out.wav"]);
+        assert_eq!(b.denoise, Some(("in.wav".into(), "out.wav".into())));
+
+        let c = parse_args_from(["--model", "m.onnx", "--atten", "12.5"]);
+        assert_eq!(c.model.as_deref(), Some("m.onnx"));
+        assert_eq!(c.atten, Some(12.5));
+
+        for flag in ["-h", "--help"] {
+            assert!(parse_args_from([flag]).help);
+        }
+    }
+
+    /// Nothing here should ever consume the *next* flag as a value, and a
+    /// duration that isn't a number must not silently become a no-op recording.
+    #[test]
+    fn cli_does_not_invent_values_for_incomplete_flags() {
+        assert!(parse_args_from(["--record", "abc", "out.wav"])
+            .record
+            .is_none());
+        assert!(parse_args_from(["--record", "60"]).record.is_none());
+        assert!(parse_args_from(["--denoise", "only-one.wav"])
+            .denoise
+            .is_none());
+        assert!(parse_args_from(["--atten", "loud"]).atten.is_none());
+        assert!(parse_args_from(["--mic"]).mic.is_none());
+
+        // Empty command line: the tray launch. Everything off.
+        let none = parse_args_from(Vec::<String>::new());
+        assert!(!none.help && !none.list_devices);
+        assert!(none.mic.is_none() && none.record.is_none() && none.denoise.is_none());
+    }
+
+    /// The help text is the only documentation most people will read, and it
+    /// once advertised config keys (`input_device_id`) that no longer existed.
+    /// Tie it to the struct that actually gets parsed.
+    #[test]
+    fn help_describes_the_config_keys_that_exist() {
+        let help = HELP;
+        let cfg = toml::to_string(&config::Config::default()).unwrap();
+        for key in ["microphones", "output_device", "enabled", "use_onnx"] {
+            assert!(cfg.contains(key), "{key} is not a real config key any more");
+            assert!(help.contains(key), "help does not mention `{key}`");
+        }
+        assert!(
+            !help.contains("device_id"),
+            "help still advertises id-based config; devices are named now"
+        );
+        for flag in ["--list-devices", "--mic", "--record", "--denoise"] {
+            assert!(help.contains(flag), "help does not mention {flag}");
+        }
+    }
+
+    #[test]
+    fn is_missing_cable_looks_through_the_whole_chain() {
+        let buried = anyhow::Error::new(audio_io::AudioError::VirtualCableMissing)
+            .context("opening the render device")
+            .context("starting the audio pipeline");
+        assert!(is_missing_cable(&buried), "must survive being wrapped");
+
+        let other = anyhow::Error::new(audio_io::AudioError::DeviceInvalidated {
+            context: "starting capture",
+        })
+        .context("starting the audio pipeline");
+        assert!(!is_missing_cable(&other));
+        assert!(!is_missing_cable(&anyhow::anyhow!("plain string error")));
     }
 }

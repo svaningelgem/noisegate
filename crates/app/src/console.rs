@@ -88,3 +88,33 @@ unsafe fn open(name: windows::core::PCWSTR, write: bool) -> HANDLE {
     )
     .unwrap_or(INVALID_HANDLE_VALUE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Under the test harness stdout is a pipe, so it is already usable and
+    /// `attach_to_parent` must take the early exit. That branch is the whole
+    /// point: it once reopened CONOUT$ unconditionally, which threw away
+    /// `noisegate --list-devices > out.txt` and printed into a console nobody
+    /// was looking at.
+    #[test]
+    fn an_already_redirected_stdout_is_left_alone() {
+        let before = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.unwrap();
+
+        assert!(attach_to_parent(), "stdio is usable under cargo test");
+
+        let after = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.unwrap();
+        assert_eq!(before.0, after.0, "stdout was redirected out from under us");
+
+        // And it still works.
+        println!("stdout survived attach_to_parent");
+    }
+
+    #[test]
+    fn usable_handles_are_told_apart_from_unset_ones() {
+        assert!(unsafe { is_usable(STD_OUTPUT_HANDLE) });
+        // Not a standard handle id at all — GetStdHandle rejects it.
+        assert!(!unsafe { is_usable(STD_HANDLE(0)) });
+    }
+}

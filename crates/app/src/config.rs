@@ -81,12 +81,18 @@ impl Config {
     }
 
     pub fn load() -> anyhow::Result<Self> {
-        let path = config_path();
+        Self::load_from(&config_path())
+    }
+
+    fn load_from(path: &std::path::Path) -> anyhow::Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(&path)?;
-        let mut cfg: Self = toml::from_str(&text)?;
+        Self::parse(&std::fs::read_to_string(path)?)
+    }
+
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let mut cfg: Self = toml::from_str(text)?;
         // Fold a single legacy choice into the priority list.
         if cfg.microphones.is_empty() && !cfg.input_device.is_empty() {
             cfg.microphones.push(std::mem::take(&mut cfg.input_device));
@@ -104,12 +110,15 @@ impl Config {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = config_path();
+        self.save_to(&config_path())
+    }
+
+    fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
+        std::fs::write(path, text)?;
         Ok(())
     }
 }
@@ -178,18 +187,113 @@ mod tests {
     /// reads. Writing to the legacy single field made --mic a no-op.
     #[test]
     fn a_legacy_single_choice_becomes_the_first_preference() {
-        let toml = r#"
+        let cfg = Config::parse(
+            r#"
             input_device = "Microphone (fifine Microphone)"
             enabled = true
-        "#;
-        let mut cfg: Config = toml::from_str(toml).unwrap();
-        assert!(cfg.microphones.is_empty(), "not migrated until load() runs");
-
-        // Same fold that Config::load performs.
-        if cfg.microphones.is_empty() && !cfg.input_device.is_empty() {
-            cfg.microphones.push(std::mem::take(&mut cfg.input_device));
-        }
+        "#,
+        )
+        .unwrap();
         assert_eq!(cfg.microphones, vec!["Microphone (fifine Microphone)"]);
+        assert!(cfg.input_device.is_empty(), "moved, not copied");
+
+        // A list already present wins; the legacy field is not prepended on
+        // top of it every time the file is read.
+        let cfg = Config::parse(
+            r#"
+            input_device = "Old Mic"
+            microphones = ["New Mic"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.microphones, vec!["New Mic"]);
+    }
+
+    /// Everything the tray writes has to come back on the next launch.
+    #[test]
+    fn settings_survive_a_save_and_reload() {
+        let dir = std::env::temp_dir().join(format!("noisegate-cfg-{}", std::process::id()));
+        let path = dir.join("nested").join("config.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut saved = Config {
+            microphones: vec!["Yeti".into(), "Webcam".into()],
+            output_device: "CABLE Input".into(),
+            enabled: false,
+            attenuation_db: 42.5,
+            use_onnx: false,
+            ..Config::default()
+        };
+        saved.prefer_microphone("Webcam");
+        // Saving must create the directory: first run has no %APPDATA% folder.
+        saved.save_to(&path).unwrap();
+
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.microphones, vec!["Webcam", "Yeti"]);
+        assert_eq!(loaded.output_device, "CABLE Input");
+        assert!(!loaded.enabled);
+        assert!(!loaded.use_onnx);
+        assert_eq!(loaded.attenuation_db, 42.5);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A first run, and a file someone edited into nonsense. Neither may stop
+    /// the app starting — the tray is how you'd fix the config in the first
+    /// place.
+    #[test]
+    fn a_missing_file_is_defaults_and_a_broken_one_is_an_error() {
+        let missing = std::env::temp_dir().join("noisegate-does-not-exist/config.toml");
+        let cfg = Config::load_from(&missing).unwrap();
+        assert!(cfg.enabled && cfg.use_onnx, "defaults are on");
+
+        assert!(Config::parse("microphones = \"not a list\"").is_err());
+    }
+
+    /// Config files predate every field added since; missing keys must fall
+    /// back rather than refusing to load.
+    #[test]
+    fn an_old_config_missing_new_keys_still_loads() {
+        let cfg = Config::parse("enabled = true").unwrap();
+        assert!(cfg.use_onnx, "ONNX is the default for anyone upgrading");
+        assert_eq!(cfg.attenuation_db, default_atten());
+        assert!(cfg.microphones.is_empty());
+    }
+
+    #[test]
+    fn the_config_lives_somewhere_named_and_takes_the_logs_with_it() {
+        let cfg = config_path();
+        assert!(cfg.ends_with("NoiseGate/config.toml") || cfg.ends_with(r"NoiseGate\config.toml"));
+        assert_eq!(
+            log_dir().parent(),
+            cfg.parent(),
+            "logs sit beside the config"
+        );
+    }
+
+    /// The tray offers whatever `model_path` points at, but only if it is
+    /// really there — a stale path must fall back to RNNoise, not fail.
+    #[test]
+    fn a_model_is_only_offered_when_the_file_exists() {
+        let dir = std::env::temp_dir().join(format!("noisegate-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("dfn3.onnx");
+        std::fs::write(&model, b"not really a model, but it exists").unwrap();
+
+        let c = Config {
+            model_path: model.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        assert_eq!(c.available_model(), Some(model.clone()));
+        assert_eq!(
+            c.active_model(),
+            Some(model.clone()),
+            "use_onnx defaults on"
+        );
+
+        std::fs::remove_file(&model).unwrap();
+        assert!(c.available_model().is_none(), "stale path offers nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -66,3 +66,90 @@ where
         writeln!(writer, "{RESET}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::prelude::*;
+
+    use super::*;
+
+    /// Collects everything the subscriber writes so the formatted line can be
+    /// asserted on.
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `f` with our formatter installed and return what it printed.
+    fn captured(f: impl FnOnce()) -> String {
+        let buf = Buffer::default();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .event_format(GreenFormat::new())
+            .with_writer(buf.clone());
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
+        let bytes = buf.0.lock().unwrap().clone();
+        String::from_utf8(bytes).expect("formatter must emit valid UTF-8")
+    }
+
+    #[test]
+    fn a_line_carries_the_level_the_message_and_an_uptime() {
+        let out = captured(|| tracing::error!(device = "Yeti", "capture failed"));
+
+        assert!(out.contains("ERROR"), "{out:?}");
+        assert!(out.contains("capture failed"), "{out:?}");
+        assert!(out.contains("device"), "fields must survive: {out:?}");
+        assert!(out.contains("s]"), "expected an uptime stamp: {out:?}");
+        assert!(out.ends_with('\n'), "one line per event");
+    }
+
+    /// Every level must be visually distinct — the point of the glyphs is
+    /// spotting a warning in a wall of green.
+    #[test]
+    fn each_level_gets_its_own_glyph() {
+        let lines = [
+            captured(|| tracing::error!("x")),
+            captured(|| tracing::warn!("x")),
+            captured(|| tracing::info!("x")),
+            captured(|| tracing::debug!("x")),
+            captured(|| tracing::trace!("x")),
+        ];
+        let glyphs: Vec<&str> = lines
+            .iter()
+            .map(|l| {
+                ["✗", "!", "›", "·", "."]
+                    .into_iter()
+                    .find(|g| l.contains(g))
+                    .unwrap_or("?")
+            })
+            .collect();
+        assert_eq!(glyphs, ["✗", "!", "›", "·", "."], "lines were {lines:#?}");
+    }
+
+    /// Colour has to be closed off, or the escape sequence bleeds into
+    /// whatever the terminal prints next.
+    #[test]
+    fn colour_is_always_reset_before_the_newline() {
+        let out = captured(|| tracing::info!("tinted"));
+        assert!(out.starts_with(DIM_GREEN), "{out:?}");
+        assert!(out.trim_end().ends_with(RESET), "{out:?}");
+    }
+}

@@ -18,25 +18,33 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **42%**, which is the level
-already reached. A pull request may raise that number; it must never lower it.
-When coverage improves, bump `--fail-under-lines` in
-`.github/workflows/ci.yml` in the same PR.
+CI enforces a **minimum** line coverage, currently **54%**, which is just under
+the level already reached (55.8%). A pull request may raise that number; it must
+never lower it. When coverage improves, bump `--fail-under-lines` in
+`.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
+PR — a tag must never publish something a pull request would have failed.
 
 **The goal is 100%.** It is worth being honest about the distance:
 
 | area | covered | why |
 |---|---|---|
+| `rnnoise.rs` | 100% | pure DSP |
+| `log_format.rs` | 95% | the formatter runs against a buffer instead of a terminal |
 | `dsp/dfn_frontend.rs` | 94% | pure DSP, checked against the reference implementation |
-| `devices.rs` | 89% | pure logic — device matching, priority, cable detection |
+| `devices.rs` | 94% | pure logic — device matching, priority, cable detection |
+| `autostart.rs` | 94% | round-trips through a real registry key |
+| `config.rs` | 91% | load/save take a path, so tests never touch `%APPDATA%` |
+| `pipeline.rs` | 86% | driven through a fake audio backend, including device selection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
+| `offline.rs` | 81% | `--denoise` runs end to end on a generated WAV |
 | `format.rs` | 76% | mix-format validation is pure |
-| `pipeline.rs` | 73% | driven through a fake audio backend; only the WASAPI wiring is left |
-| `tray.rs` | 26% | labels and icons are testable; the event loop is not |
+| `firstrun.rs` | 75% | the dialog *text* is testable; the message box is not |
+| `main.rs` | 44% | argument parsing and the single-instance lock; `real_main` is not |
+| `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
+| `tray.rs` | 27% | labels and icons are testable; the event loop is not |
 | `wasapi_capture.rs` | 0% | needs a real microphone and the audio engine |
 | `wasapi_render.rs` | 0% | needs a real endpoint |
 | `dsp/onnx.rs` | 0% | needs `onnxruntime.dll` and a model file |
-| `mmcss.rs` | 0% | asks the OS scheduler for Pro Audio priority |
 
 The uncovered majority is not untested-because-lazy; it is code whose entire
 job is talking to Windows. Reaching 100% needs one of:
@@ -49,8 +57,9 @@ job is talking to Windows. Reaching 100% needs one of:
 2. **Loopback tests on a machine with a virtual cable** — CI runners have no
    audio devices at all, so these could only run locally or on a self-hosted
    runner.
-3. **A checked-in ONNX model** — would cover `dsp/onnx.rs`, but the licence
-   for the DeepFilterNet weights is unresolved (see the project README).
+3. **A checked-in ONNX model** — would cover `dsp/onnx.rs`. Redistributing the
+   DeepFilterNet weights is not ours to do, which is why we are training our
+   own; once those land in the repo this stops being a blocker.
 
 Until one of those lands, the honest target is "everything that can be tested
 without hardware is tested", and the ratchet is how that gets enforced.

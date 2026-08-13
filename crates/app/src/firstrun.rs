@@ -27,7 +27,14 @@ pub enum CableChoice {
 /// isn't ready to install a driver gets this dialog on every single boot,
 /// which is a popup loop they can only escape through the registry.
 pub fn cable_missing() -> CableChoice {
-    let text = "NoiseGate cleans up your microphone, but it needs one more \
+    if crate::message_box_yes_no(CABLE_TEXT) {
+        CableChoice::OpenSite
+    } else {
+        CableChoice::Close
+    }
+}
+
+const CABLE_TEXT: &str = "NoiseGate cleans up your microphone, but it needs one more \
 free program to pass the cleaned sound on to Zoom, Teams, Discord and so on.\n\n\
 That program is called VB-Cable. It acts like a second microphone that other \
 apps can listen to. Without it, NoiseGate has nowhere to send your voice.\n\n\
@@ -37,20 +44,19 @@ It takes about two minutes to install and it's free.\n\n\
 (Choosing No also stops NoiseGate starting with Windows, so you won't see \
 this message every time you switch on your PC.)";
 
-    if crate::message_box_yes_no(text) {
-        CableChoice::OpenSite
-    } else {
-        CableChoice::Close
-    }
-}
-
 /// Ask before using the high-quality model, naming where it comes from.
 ///
 /// Shown whenever the model is deliberately chosen, not once and remembered:
 /// it's a licence acceptance, and it's a decision the user just made, so it
 /// isn't a loop.
 pub fn model_licence() -> bool {
-    let text = format!(
+    let accepted = crate::message_box_yes_no(&licence_text());
+    info!(accepted, "model licence prompt answered");
+    accepted
+}
+
+fn licence_text() -> String {
+    format!(
         "The high-quality noise removal uses DeepFilterNet3, a speech model \
 published by its authors at:\n\n    {MODEL_SOURCE_URL}\n\n\
 It is a separate work from NoiseGate, with its own licence terms. NoiseGate \
@@ -59,16 +65,17 @@ accept those terms yourself.\n\n\
     Yes  —  I accept the model's terms and want to use it\n\
     No   —  stay on the simpler built-in noise removal\n\n\
 You can change this later from the tray menu."
-    );
-    let accepted = crate::message_box_yes_no(&text);
-    info!(accepted, "model licence prompt answered");
-    accepted
+    )
 }
 
 /// Tell the user where to put the model, since we can't fetch it for them yet.
 pub fn model_missing(expected: &std::path::Path) {
     warn!(path = %expected.display(), "ONNX model not present");
-    crate::message_box(&format!(
+    crate::message_box(&missing_text(expected));
+}
+
+fn missing_text(expected: &std::path::Path) -> String {
+    format!(
         "The high-quality model isn't installed yet.\n\n\
          Download the DeepFilterNet3 ONNX export from:\n\n    {}\n\n\
          and save it as:\n\n    {}\n\n\
@@ -76,7 +83,7 @@ pub fn model_missing(expected: &std::path::Path) {
          Until then it stays on the built-in noise removal.",
         MODEL_SOURCE_URL,
         expected.display()
-    ));
+    )
 }
 
 #[cfg(test)]
@@ -91,5 +98,55 @@ mod tests {
         for url in [CABLE_URL, MODEL_SOURCE_URL] {
             assert!(url.starts_with("https://"), "{url} must be https");
         }
+    }
+
+    /// This dialog is shown to someone who has just installed an app that
+    /// appears not to work. It has to explain itself without jargon, and it
+    /// has to say what each button does — there is no cancel.
+    #[test]
+    fn the_cable_dialog_explains_itself_in_plain_language() {
+        assert!(CABLE_TEXT.contains("VB-Cable"), "name the thing to install");
+        assert!(CABLE_TEXT.contains("Yes") && CABLE_TEXT.contains("No"));
+        for jargon in ["endpoint", "WASAPI", "driver", "virtual audio device"] {
+            assert!(
+                !CABLE_TEXT.contains(jargon),
+                "'{jargon}' means nothing here"
+            );
+        }
+    }
+
+    /// The text promises that "No" also turns off start-with-Windows. If that
+    /// promise is ever removed from `real_main`, this dialog becomes a boot
+    /// loop the user can only escape through the registry.
+    #[test]
+    fn the_cable_dialog_promises_to_stop_nagging() {
+        assert!(
+            CABLE_TEXT.contains("stops NoiseGate starting with Windows"),
+            "the No button's side effect must be stated up front"
+        );
+        let main_rs = include_str!("main.rs");
+        assert!(
+            main_rs.contains("autostart::set(false)"),
+            "main no longer keeps the promise this dialog makes"
+        );
+    }
+
+    /// We do not ship the model, and the dialog is a licence acceptance, so it
+    /// has to say whose terms are being accepted and where it comes from.
+    #[test]
+    fn the_licence_dialog_names_the_model_and_its_source() {
+        let text = licence_text();
+        assert!(text.contains("DeepFilterNet3"));
+        assert!(text.contains(MODEL_SOURCE_URL));
+        assert!(text.contains("separate work"), "must not read as ours");
+        assert!(text.contains("Yes") && text.contains("No"));
+    }
+
+    /// "Model missing" is only useful if it says where to put the file.
+    #[test]
+    fn the_missing_model_dialog_gives_the_exact_path() {
+        let text = missing_text(std::path::Path::new(r"C:\Apps\NoiseGate\model.onnx"));
+        assert!(text.contains(r"C:\Apps\NoiseGate\model.onnx"));
+        assert!(text.contains(MODEL_SOURCE_URL));
     }
 }
