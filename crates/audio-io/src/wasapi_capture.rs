@@ -269,12 +269,8 @@ fn capture_loop(
                     got_first_buffer = true;
                 }
 
-                if flags
-                    & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0
-                        | AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0
-                        | AUDCLNT_BUFFERFLAGS_SILENT.0) as u32
-                    != 0
-                {
+                let status = BufferStatus::from_flags(flags);
+                if status.glitch {
                     sink.on_glitch(flags);
                 }
 
@@ -282,12 +278,7 @@ fn capture_loop(
                 // validated as 32-bit float above, so `sample_count` f32s is
                 // exactly what the engine allocated.
                 let sample_count = frames_avail as usize * device_channels;
-                let raw: &[f32] = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
-                    // When the engine flags a buffer silent the contents are
-                    // undefined — it just didn't bother zeroing the mapping.
-                    // Feeding it downstream would push whatever happens to be
-                    // in that memory out to the render endpoint, so substitute
-                    // real silence.
+                let raw: &[f32] = if status.silent {
                     silence.resize(sample_count, 0.0);
                     &silence[..sample_count]
                 } else {
@@ -395,6 +386,31 @@ unsafe fn find_device(
         .map_err(|e| AudioError::wasapi("GetDevice", e))
 }
 
+/// What the engine's per-buffer flags mean for us.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BufferStatus {
+    /// The contents are undefined — the engine did not bother zeroing the
+    /// mapping. Passing them downstream would push whatever happened to be in
+    /// that memory out to the render endpoint, so they must be replaced with
+    /// real silence rather than trusted.
+    pub silent: bool,
+    /// Worth telling the sink about: the stream is not intact here.
+    pub glitch: bool,
+}
+
+impl BufferStatus {
+    pub fn from_flags(flags: u32) -> Self {
+        let has = |bit: u32| flags & bit != 0;
+        let silent = has(AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
+        Self {
+            silent,
+            glitch: silent
+                || has(AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32)
+                || has(AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32),
+        }
+    }
+}
+
 /// Accumulates an arbitrary-length mono f32 stream into fixed 480-sample
 /// frames. Holds at most one partial frame across calls.
 pub(crate) struct FrameAccumulator {
@@ -494,6 +510,61 @@ impl InlineConverter {
             self.last_sample = s;
         }
         &self.out
+    }
+}
+
+#[cfg(test)]
+mod buffer_status_tests {
+    use super::*;
+
+    #[test]
+    fn a_clean_buffer_is_neither_silent_nor_a_glitch() {
+        let s = BufferStatus::from_flags(0);
+        assert!(!s.silent && !s.glitch);
+    }
+
+    /// The one that matters for what reaches the render endpoint: a
+    /// silent-flagged buffer holds undefined memory, so it must be recognised
+    /// and replaced rather than passed on.
+    #[test]
+    fn a_silent_flagged_buffer_is_recognised() {
+        let s = BufferStatus::from_flags(AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
+        assert!(s.silent, "undefined memory would be forwarded as audio");
+        assert!(s.glitch, "and it is worth reporting");
+    }
+
+    /// A dropout is a glitch, but the samples we were handed are real — they
+    /// must not be thrown away and replaced with silence.
+    #[test]
+    fn a_discontinuity_is_reported_without_discarding_the_audio() {
+        for (name, flag) in [
+            (
+                "DATA_DISCONTINUITY",
+                AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32,
+            ),
+            (
+                "TIMESTAMP_ERROR",
+                AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32,
+            ),
+        ] {
+            let s = BufferStatus::from_flags(flag);
+            assert!(s.glitch, "{name} should be reported");
+            assert!(!s.silent, "{name} does not mean the data is undefined");
+        }
+    }
+
+    #[test]
+    fn flags_we_do_not_know_about_are_ignored() {
+        let s = BufferStatus::from_flags(0x8000_0000);
+        assert!(!s.silent && !s.glitch);
+    }
+
+    #[test]
+    fn several_flags_at_once_are_all_honoured() {
+        let s = BufferStatus::from_flags(
+            AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 | AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32,
+        );
+        assert!(s.silent && s.glitch);
     }
 }
 

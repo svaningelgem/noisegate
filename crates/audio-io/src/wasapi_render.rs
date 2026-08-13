@@ -183,8 +183,7 @@ fn render_loop(
 
             // Pull mono frames until we have enough pre-converted samples to
             // fill `frames_writable` frames at the device rate.
-            let needed_src =
-                (frames_writable as u64 * SAMPLE_RATE as u64).div_ceil(device_rate as u64) as usize;
+            let needed_src = source_samples_needed(frames_writable, device_rate);
 
             while pending.len() < needed_src {
                 match source.next_frame() {
@@ -217,6 +216,16 @@ fn render_loop(
         let _ = client.Stop();
         Ok(())
     }
+}
+
+/// How many mono 48 kHz samples are needed to fill `frames` frames at the
+/// device's rate.
+///
+/// Rounds up deliberately. Coming up short leaves the tail of the engine's
+/// buffer unwritten, which the device plays as whatever was there before;
+/// one spare sample stays in `pending` and is used by the next buffer.
+fn source_samples_needed(frames: u32, device_rate: u32) -> usize {
+    (frames as u64 * SAMPLE_RATE as u64).div_ceil(device_rate as u64) as usize
 }
 
 /// Mono 48 kHz → multi-channel device-rate f32 interleaved.
@@ -381,6 +390,40 @@ mod tests {
             "consumed {consumed} over {CALLS} buffers, expected about {expected} — \
              the pending queue would drift by {} samples a second",
             (consumed as i64 - expected as i64).abs() * 48_000 / (FRAMES * CALLS) as i64
+        );
+    }
+
+    #[test]
+    fn a_matching_device_needs_one_source_sample_per_frame() {
+        assert_eq!(source_samples_needed(480, SAMPLE_RATE), 480);
+        assert_eq!(source_samples_needed(0, SAMPLE_RATE), 0);
+    }
+
+    #[test]
+    fn a_slower_device_needs_more_source_than_frames() {
+        // 441 frames at 44.1 kHz is 10 ms, which is 480 samples at 48 kHz.
+        assert_eq!(source_samples_needed(441, 44_100), 480);
+        // 96 kHz is the other way round: two device frames per source sample.
+        assert_eq!(source_samples_needed(960, 96_000), 480);
+    }
+
+    /// Rounding down would leave the tail of the engine's buffer unwritten,
+    /// and the device plays whatever was there before.
+    #[test]
+    fn the_sample_count_always_rounds_up() {
+        // 1 frame at 44.1 kHz is 1.088 samples at 48 kHz.
+        assert_eq!(source_samples_needed(1, 44_100), 2);
+        assert_eq!(source_samples_needed(100, 44_100), 109); // 108.84
+    }
+
+    /// A whole engine buffer at once must not overflow the intermediate
+    /// arithmetic — the calculation is done in u64 for exactly this reason.
+    #[test]
+    fn a_huge_buffer_does_not_overflow() {
+        let needed = source_samples_needed(u32::MAX, 44_100);
+        assert!(
+            needed > u32::MAX as usize,
+            "u32 arithmetic would have wrapped"
         );
     }
 
