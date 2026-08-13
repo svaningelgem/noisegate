@@ -59,6 +59,13 @@ Source: "{#SourceDir}\{#AppExe}";      DestDir: "{app}"; Flags: ignoreversion
 ; ONNX Runtime is MIT licensed and freely redistributable. Bundled rather than
 ; downloaded: it turns a required download into no download at all.
 Source: "{#SourceDir}\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
+; DeepFilterNet3, dual MIT/Apache-2.0, so redistributable with attribution —
+; models\NOTICE.md carries it. Without this the app installs and then quietly
+; falls back to RNNoise, which does not remove background speech at all: the
+; whole reason NoiseGate exists. The app picks it up automatically from
+; alongside the executable.
+Source: "..\models\model.onnx";        DestDir: "{app}"; Flags: ignoreversion
+Source: "..\models\NOTICE.md";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md";                DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\LICENSE-MIT";              DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE-APACHE";           DestDir: "{app}"; Flags: ignoreversion

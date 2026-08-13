@@ -59,10 +59,10 @@ fn licence_text() -> String {
     format!(
         "The high-quality noise removal uses DeepFilterNet3, a speech model \
 published by its authors at:\n\n    {MODEL_SOURCE_URL}\n\n\
-It is a separate work from NoiseGate, with its own licence terms. NoiseGate \
-does not include or redistribute it — you obtain it from the source above and \
-accept those terms yourself.\n\n\
-    Yes  —  I accept the model's terms and want to use it\n\
+It is a separate work from NoiseGate, by Hendrik Schröter and contributors, \
+and is included under its MIT / Apache-2.0 licence — see NOTICE.md next to the \
+program. Nothing is downloaded.\n\n\
+    Yes  —  use it (recommended)\n\
     No   —  stay on the simpler built-in noise removal\n\n\
 You can change this later from the tray menu."
     )
@@ -139,6 +139,12 @@ mod tests {
         assert!(text.contains("DeepFilterNet3"));
         assert!(text.contains(MODEL_SOURCE_URL));
         assert!(text.contains("separate work"), "must not read as ours");
+        // We bundle it under MIT/Apache-2.0 now, so the dialog must not claim
+        // the user has to go and fetch it.
+        assert!(
+            !text.contains("does not include") && !text.contains("obtain it"),
+            "the model ships with the app; the dialog says otherwise: {text}"
+        );
         assert!(text.contains("Yes") && text.contains("No"));
     }
 

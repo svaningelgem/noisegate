@@ -95,6 +95,8 @@ jobs:
           mkdir -p dist/portable
           cp target/release/noisegate.exe target/release/onnxruntime.dll \
              README.md LICENSE-MIT LICENSE-APACHE dist/portable/
+          # The model, and the attribution that has to travel with it.
+          cp models/model.onnx models/NOTICE.md dist/portable/
           cd dist/portable
           7z a "../NoiseGate-${{ steps.version.outputs.version }}-portable.zip" .
 

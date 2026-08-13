@@ -59,7 +59,7 @@ pub struct OnnxDenoiser {
 /// NoiseGate from Downloads with a hostile `onnxruntime.dll` sitting there and
 /// it executes inside a process that holds the microphone open. Naming the
 /// full path removes the search entirely.
-fn pin_dylib_path() {
+pub(crate) fn pin_dylib_path() {
     let already_set = std::env::var_os("ORT_DYLIB_PATH").is_some();
     let exe_dir = std::env::current_exe()
         .ok()

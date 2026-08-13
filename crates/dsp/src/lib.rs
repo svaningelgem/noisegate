@@ -96,6 +96,8 @@ impl DenoiserHost {
 pub mod dfn_frontend;
 
 #[cfg(feature = "onnx")]
+pub mod dfn3;
+#[cfg(feature = "onnx")]
 mod onnx;
 #[cfg(feature = "rnnoise")]
 mod rnnoise;
@@ -114,6 +116,12 @@ pub fn build_denoiser(
     if let Some(path) = model_path {
         #[cfg(feature = "onnx")]
         {
+            // A directory means upstream's three-graph export, which we can
+            // rebuild ourselves from the published checkpoint; a file means the
+            // single-file streaming graph. See docs/model-pipeline.md.
+            if path.is_dir() {
+                return Ok(Box::new(dfn3::Dfn3Denoiser::load(path)?));
+            }
             let mut d = OnnxDenoiser::load(path)?;
             // The config caps how much the model may suppress. RNNoise has no
             // equivalent knob, so this only applies to the ONNX path.
