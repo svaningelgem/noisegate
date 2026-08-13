@@ -599,12 +599,8 @@ impl ApplicationHandler<UserEvent> for App {
         } else if id == *items.auto_start.id() {
             let wanted = items.auto_start.is_checked();
             match crate::autostart::set(wanted) {
-                Ok(()) => {
-                    let mut c = self.cfg.write().unwrap();
-                    c.auto_start = wanted;
-                    let _ = c.save();
-                    info!(auto_start = wanted, "start-with-Windows toggled");
-                }
+                // Nothing to persist: the Run key is the state.
+                Ok(()) => info!(auto_start = wanted, "start-with-Windows toggled"),
                 Err(e) => {
                     warn!(error = %e, "could not update the Run key");
                     // Put the checkbox back where it was — it must reflect the

@@ -32,9 +32,10 @@ pub struct Config {
     /// Attenuation limit in dB for DeepFilterNet. 6.0 = subtle, 100.0 = max.
     #[serde(default = "default_atten")]
     pub attenuation_db: f32,
-    /// Auto-start at user login.
-    #[serde(default)]
-    pub auto_start: bool,
+    // Start-at-login deliberately has no field here. It lives in
+    // HKCU\...\CurrentVersion\Run, which Windows reads and the user can
+    // inspect or remove without us. A config mirror could only ever drift
+    // from it, and would silently do nothing if someone set it by hand.
     /// Path to an ONNX denoise model. Only honoured by builds made with
     /// `--features onnx`.
     #[serde(default)]
@@ -62,7 +63,6 @@ impl Default for Config {
             output_device: String::new(),
             enabled: true,
             attenuation_db: default_atten(),
-            auto_start: false,
             model_path: String::new(),
             use_onnx: true,
         }

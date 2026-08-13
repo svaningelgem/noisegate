@@ -103,7 +103,7 @@ A tray icon appears in the system tray (bottom-right corner of your taskbar) —
 |---|---|
 | **Enabled** | Toggles denoising. Unchecked = bypass, audio still flows. **Left-clicking the tray icon** does the same thing, so the common action needs one click. |
 | **Microphone ▸** | Pick the input device. **Windows default** is selected out of the box and follows whatever Windows is using. Switching restarts the audio pipeline in place and is remembered. |
-| **Start with Windows** | Adds/removes a `NoiseGate` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Per-user, no elevation, and the checkbox reflects the registry rather than the config file. |
+| **Start with Windows** | Adds/removes a `NoiseGate` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Per-user, no elevation. There is deliberately no config setting for this — the registry is the state, so the checkbox can never disagree with what Windows will actually do. |
 | **Open log folder** | Opens `%APPDATA%\NoiseGate\logs`. |
 | **Quit NoiseGate** | Exits. |
 
@@ -199,8 +199,6 @@ output_device = ""           # by name; empty = auto-detect a virtual cable
 enabled = true
 attenuation_db = 100.0       # 6.0 = subtle, 100.0 = max. ONNX models only;
                              # RNNoise has no equivalent knob.
-auto_start = false           # mirrors the tray checkbox; the registry is
-                             # the source of truth
 model_path = ""              # ONNX model to use instead of RNNoise
 ```
 
