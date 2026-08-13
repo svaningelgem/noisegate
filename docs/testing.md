@@ -18,8 +18,8 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **54%**, which is just under
-the level already reached (55.8%). A pull request may raise that number; it must
+CI enforces a **minimum** line coverage, currently **65%**, which is just under
+the level already reached (66.9%). A pull request may raise that number; it must
 never lower it. When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
 PR — a tag must never publish something a pull request would have failed.
@@ -34,17 +34,37 @@ PR — a tag must never publish something a pull request would have failed.
 | `devices.rs` | 94% | pure logic — device matching, priority, cable detection |
 | `autostart.rs` | 94% | round-trips through a real registry key |
 | `config.rs` | 91% | load/save take a path, so tests never touch `%APPDATA%` |
-| `pipeline.rs` | 86% | driven through a fake audio backend, including device selection |
+| `pipeline.rs` | 85% | driven through a fake audio backend, including device selection |
+| `dsp/lib.rs` | 85% | backend selection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
 | `offline.rs` | 81% | `--denoise` runs end to end on a generated WAV |
-| `format.rs` | 76% | mix-format validation is pure |
+| `banner.rs` | 81% | the art has to fit 80 columns |
+| `format.rs` | 80% | mix-format validation is pure |
+| `dsp/onnx.rs` | 76% | runs a real session against `testdata/streaming_contract.onnx` |
+| `mmcss.rs` | 77% | asks the OS scheduler for Pro Audio priority |
 | `firstrun.rs` | 75% | the dialog *text* is testable; the message box is not |
+| `wasapi_capture.rs` | 46% | the resamplers and frame accumulator; the COM loop is not |
+| `wasapi_render.rs` | 45% | same — `UpConverter` is covered, the engine calls are not |
+| `tray.rs` | 47% | the watchdog, menu labels and icons; the event loop is not |
 | `main.rs` | 44% | argument parsing and the single-instance lock; `real_main` is not |
 | `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
-| `tray.rs` | 27% | labels and icons are testable; the event loop is not |
-| `wasapi_capture.rs` | 0% | needs a real microphone and the audio engine |
-| `wasapi_render.rs` | 0% | needs a real endpoint |
-| `dsp/onnx.rs` | 0% | needs `onnxruntime.dll` and a model file |
+
+## The ONNX tests
+
+`crates/dsp/testdata/streaming_contract.onnx` is a 700-byte model that
+implements the loader's contract and nothing else: three named inputs, a state
+tensor whose width has to be read from the model, and two positional outputs.
+It is deliberately not an identity — it returns `input * (states[0] + 1)` and
+increments the state — so a loader that forgets to feed the state back fails
+with a wrong sample value instead of quietly passing audio through.
+
+Regenerate it with `python scripts/make_test_model.py <path>` if the expected
+signature ever changes.
+
+These tests need `onnxruntime.dll`, which is not in the source tree. Both
+workflows download it into `target/debug` before running tests. Locally they
+skip with a message if it is missing; when `CI` is set they fail instead, so
+they cannot silently stop running while the build stays green.
 
 The uncovered majority is not untested-because-lazy; it is code whose entire
 job is talking to Windows. Reaching 100% needs one of:

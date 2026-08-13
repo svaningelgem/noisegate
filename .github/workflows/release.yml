@@ -47,6 +47,20 @@ jobs:
           grep -m1 '^version' Cargo.toml
           cargo update -w   # refresh the lockfile for the new version
 
+      # Before the test gates, not just before packaging: the ONNX tests load
+      # a real session, and they refuse to skip when CI is set.
+      - name: Fetch ONNX Runtime
+        shell: bash
+        run: |
+          # MIT licensed and redistributable, so it ships inside the installer.
+          # Pinned: ort 2.0.0-rc.10 speaks ONNX Runtime API version 22 = 1.22.x.
+          curl -sSfL -o ort.zip \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip
+          unzip -q ort.zip
+          mkdir -p target/debug target/release
+          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/debug/
+          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/release/
+
       # The same gates as CI. A tag should never publish something that
       # wouldn't have passed a pull request.
       - name: Format
@@ -62,20 +76,10 @@ jobs:
 
       - name: Coverage
         if: always()
-        run: cargo llvm-cov --all-features --fail-under-lines 54
+        run: cargo llvm-cov --all-features --fail-under-lines 65
 
       - name: Build
         run: cargo build --release --all-features
-
-      - name: Fetch ONNX Runtime
-        shell: bash
-        run: |
-          # MIT licensed and redistributable, so it ships inside the installer.
-          # Pinned: ort 2.0.0-rc.10 speaks ONNX Runtime API version 22 = 1.22.x.
-          curl -sSfL -o ort.zip \
-            https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip
-          unzip -q ort.zip
-          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/release/
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y

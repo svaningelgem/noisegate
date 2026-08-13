@@ -60,15 +60,25 @@ pub struct OnnxDenoiser {
 /// it executes inside a process that holds the microphone open. Naming the
 /// full path removes the search entirely.
 fn pin_dylib_path() {
-    if std::env::var_os("ORT_DYLIB_PATH").is_some() {
-        return; // Explicit operator choice wins.
-    }
-    if let Some(dir) = std::env::current_exe()
+    let already_set = std::env::var_os("ORT_DYLIB_PATH").is_some();
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
-        std::env::set_var("ORT_DYLIB_PATH", dir.join("onnxruntime.dll"));
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    if let Some(path) = dylib_path_to_pin(already_set, exe_dir.as_deref()) {
+        std::env::set_var("ORT_DYLIB_PATH", path);
     }
+}
+
+/// Where `ORT_DYLIB_PATH` should point, or `None` to leave it alone.
+///
+/// Separated from the environment so the rule itself can be tested: this is
+/// the guard against loading a stray `onnxruntime.dll`, and getting it wrong
+/// is a code-execution bug rather than a cosmetic one.
+fn dylib_path_to_pin(already_set: bool, exe_dir: Option<&Path>) -> Option<std::path::PathBuf> {
+    if already_set {
+        return None; // Explicit operator choice wins.
+    }
+    Some(exe_dir?.join("onnxruntime.dll"))
 }
 
 /// Pick the input whose name contains `needle`, falling back to positional
@@ -221,5 +231,197 @@ impl Denoiser for OnnxDenoiser {
         // makes the trait simple. If you load multiple models, leak each
         // label once.
         Box::leak(self.model_label.clone().into_boxed_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    // ---- the dylib guard, which needs neither runtime nor model ----------
+
+    /// Naming the full path is what stops the OS loader searching the current
+    /// working directory. Launch NoiseGate from Downloads with a hostile
+    /// `onnxruntime.dll` sitting there and a bare filename would execute it
+    /// inside a process holding the microphone open.
+    #[test]
+    fn the_runtime_is_pinned_next_to_our_own_executable() {
+        let pinned = dylib_path_to_pin(false, Some(Path::new(r"C:\Program Files\NoiseGate")))
+            .expect("should pin a path");
+        assert_eq!(
+            pinned,
+            PathBuf::from(r"C:\Program Files\NoiseGate\onnxruntime.dll")
+        );
+        assert!(
+            pinned.is_absolute(),
+            "a bare filename would be searched for"
+        );
+        assert!(pinned.parent().is_some(), "must name a directory");
+    }
+
+    #[test]
+    fn an_operators_own_choice_is_not_overridden() {
+        assert_eq!(
+            dylib_path_to_pin(true, Some(Path::new(r"C:\NoiseGate"))),
+            None,
+            "ORT_DYLIB_PATH was set deliberately; leave it alone"
+        );
+    }
+
+    /// Without an executable path there is nothing safe to point at. Falling
+    /// back to a bare filename would reintroduce the search we are avoiding.
+    #[test]
+    fn an_unknown_executable_location_pins_nothing() {
+        assert_eq!(dylib_path_to_pin(false, None), None);
+    }
+
+    // ---- the loader, against a model that implements just the contract ---
+
+    fn model_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/streaming_contract.onnx")
+    }
+
+    /// The ONNX Runtime DLL is not redistributed in the source tree; CI
+    /// downloads it and the installer ships it. Point `ort` at wherever it
+    /// actually is, or report that these tests could not run.
+    fn ort_available() -> bool {
+        if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+            return true;
+        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        for dir in ["debug", "release", "debug/deps"] {
+            let candidate = root.join(dir).join("onnxruntime.dll");
+            if candidate.exists() {
+                std::env::set_var("ORT_DYLIB_PATH", &candidate);
+                return true;
+            }
+        }
+        // A skip is fine on a developer machine that has never fetched the
+        // runtime. On CI it would mean these tests quietly stopped running
+        // while the build stayed green, so make it fatal there instead.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "onnxruntime.dll not found under target/. CI is supposed to download it \
+             before running tests — see the 'Fetch ONNX Runtime' step."
+        );
+        eprintln!(
+            "SKIP: onnxruntime.dll not found under target/. These tests need it; \
+             fetch it with the same URL the release workflow uses."
+        );
+        false
+    }
+
+    #[test]
+    fn the_state_width_is_read_from_the_model() {
+        if !ort_available() {
+            return;
+        }
+        let d = OnnxDenoiser::load(model_path()).expect("load the contract model");
+        assert_eq!(
+            d.states.len(),
+            4,
+            "the loader must take the state size from the model, not a constant"
+        );
+        assert_eq!(d.frame_input, "input_frame");
+        assert_eq!(d.states_input, "states");
+        assert_eq!(d.atten_input.as_deref(), Some("atten_lim_db"));
+        assert!(d.name().contains("streaming_contract"));
+    }
+
+    /// The whole point of the streaming contract: the model's new state has to
+    /// come back in on the next frame. A loader that dropped it would still
+    /// produce audio, just with the model permanently reset — which sounds
+    /// plausible and is completely wrong.
+    ///
+    /// The fixture returns `input * (states[0] + 1)` and increments the state,
+    /// so a fed-back state shows up as a doubling and a dropped one does not.
+    #[test]
+    fn the_models_state_is_fed_back_on_the_next_frame() {
+        if !ort_available() {
+            return;
+        }
+        let mut d = OnnxDenoiser::load(model_path()).unwrap();
+        let mut frame = [0.25f32; FRAME_SAMPLES];
+
+        d.process_frame(&mut frame).unwrap();
+        assert!(
+            frame.iter().all(|&s| (s - 0.25).abs() < 1e-6),
+            "first frame, state 0: expected the input back, got {}",
+            frame[0]
+        );
+
+        d.process_frame(&mut frame).unwrap();
+        assert!(
+            frame.iter().all(|&s| (s - 0.5).abs() < 1e-6),
+            "second frame should have seen state 1 and doubled; got {} \
+             (0.25 means the state was not fed back)",
+            frame[0]
+        );
+
+        d.process_frame(&mut frame).unwrap();
+        assert!(
+            frame.iter().all(|&s| (s - 1.5).abs() < 1e-6),
+            "third frame should have seen state 2; got {}",
+            frame[0]
+        );
+    }
+
+    /// The attenuation limit is optional in the contract, so it is easy to
+    /// wire up and never actually send. The fixture adds it to every sample.
+    #[test]
+    fn the_attenuation_limit_reaches_the_model() {
+        if !ort_available() {
+            return;
+        }
+        let mut d = OnnxDenoiser::load(model_path()).unwrap();
+        d.set_attenuation_db(3.0);
+
+        let mut frame = [0.0f32; FRAME_SAMPLES];
+        d.process_frame(&mut frame).unwrap();
+        assert!(
+            (frame[0] - 3.0).abs() < 1e-6,
+            "expected the attenuation to arrive, got {}",
+            frame[0]
+        );
+    }
+
+    /// "Suppress as much as you like" is 0; a negative limit is meaningless
+    /// and must not reach the model as one.
+    #[test]
+    fn a_negative_attenuation_is_clamped_to_zero() {
+        if !ort_available() {
+            return;
+        }
+        let mut d = OnnxDenoiser::load(model_path()).unwrap();
+        d.set_attenuation_db(-10.0);
+        assert_eq!(d.atten_lim_db, 0.0);
+
+        let mut frame = [0.0f32; FRAME_SAMPLES];
+        d.process_frame(&mut frame).unwrap();
+        assert_eq!(frame[0], 0.0);
+    }
+
+    /// Pointing `model_path` at the wrong file is an ordinary mistake, and the
+    /// message has to name the file rather than surface an ort internal.
+    #[test]
+    fn a_file_that_is_not_a_model_is_refused_by_name() {
+        if !ort_available() {
+            return;
+        }
+        let junk =
+            std::env::temp_dir().join(format!("noisegate-not-a-model-{}.onnx", std::process::id()));
+        std::fs::write(&junk, b"this is not a protobuf").unwrap();
+
+        let msg = match OnnxDenoiser::load(&junk) {
+            Ok(_) => panic!("a text file must not load as a model"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("not-a-model"),
+            "the message should name the file: {msg}"
+        );
+        let _ = std::fs::remove_file(&junk);
     }
 }

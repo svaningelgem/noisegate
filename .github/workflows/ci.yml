@@ -36,6 +36,19 @@ jobs:
       - name: Build
         run: cargo build --release --all-features
 
+      # The ONNX tests load a real session against a tiny model in
+      # crates/dsp/testdata. Without the runtime they would skip, so they
+      # assert CI is unset — meaning a missing DLL fails here rather than
+      # quietly reducing what CI covers.
+      - name: Fetch ONNX Runtime
+        shell: bash
+        run: |
+          curl -sSfL -o ort.zip \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip
+          unzip -q ort.zip
+          mkdir -p target/debug
+          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/debug/
+
       - name: Test
         run: cargo test --all-features
 
@@ -53,13 +66,24 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
+      # Same reason as the check job: without the runtime the ONNX tests
+      # would skip and the coverage number would silently drop.
+      - name: Fetch ONNX Runtime
+        shell: bash
+        run: |
+          curl -sSfL -o ort.zip \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip
+          unzip -q ort.zip
+          mkdir -p target/debug
+          cp onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll target/debug/
+
       - name: Measure coverage
         # A ratchet, not a target. The threshold is the level already reached,
         # so a pull request may raise it but never lower it. Raise the number
         # here whenever coverage improves; the goal is 100%, but see
         # docs/testing.md for why large parts of this codebase cannot be
         # covered without a hardware abstraction that does not exist yet.
-        run: cargo llvm-cov --all-features --fail-under-lines 54
+        run: cargo llvm-cov --all-features --fail-under-lines 65
 
       - name: Coverage summary
         if: always()
