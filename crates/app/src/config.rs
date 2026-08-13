@@ -147,3 +147,60 @@ fn base_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("NoiseGate")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preferring_a_microphone_moves_it_to_the_front() {
+        let mut c = Config::default();
+        c.prefer_microphone("A");
+        c.prefer_microphone("B");
+        assert_eq!(c.microphones, vec!["B", "A"]);
+
+        // Choosing an existing one promotes rather than duplicates.
+        c.prefer_microphone("A");
+        assert_eq!(c.microphones, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn the_remembered_list_does_not_grow_without_bound() {
+        let mut c = Config::default();
+        for i in 0..12 {
+            c.prefer_microphone(&format!("mic {i}"));
+        }
+        assert_eq!(c.microphones.len(), 5);
+        assert_eq!(c.microphones[0], "mic 11", "most recent first");
+    }
+
+    /// The CLI override and the tray both have to write where the pipeline
+    /// reads. Writing to the legacy single field made --mic a no-op.
+    #[test]
+    fn a_legacy_single_choice_becomes_the_first_preference() {
+        let toml = r#"
+            input_device = "Microphone (fifine Microphone)"
+            enabled = true
+        "#;
+        let mut cfg: Config = toml::from_str(toml).unwrap();
+        assert!(cfg.microphones.is_empty(), "not migrated until load() runs");
+
+        // Same fold that Config::load performs.
+        if cfg.microphones.is_empty() && !cfg.input_device.is_empty() {
+            cfg.microphones.push(std::mem::take(&mut cfg.input_device));
+        }
+        assert_eq!(cfg.microphones, vec!["Microphone (fifine Microphone)"]);
+    }
+
+    #[test]
+    fn an_onnx_model_is_only_active_when_switched_on() {
+        let mut c = Config::default();
+        c.model_path = "nonexistent.onnx".into();
+        c.use_onnx = false;
+        assert!(c.active_model().is_none(), "off means off");
+        // With use_onnx on, a path that does not exist still yields nothing,
+        // so the pipeline falls back to RNNoise rather than failing.
+        c.use_onnx = true;
+        assert!(c.active_model().is_none());
+    }
+}

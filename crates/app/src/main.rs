@@ -238,13 +238,17 @@ fn real_main(has_console: bool) -> Result<()> {
     log_input_devices();
 
     let mut cfg_value = config::Config::load_or_default();
-    // Apply CLI overrides (don't persist them — that's what the tray menu
-    // is for once it's wired up).
+    // Apply CLI overrides. Not persisted — that's what the tray menu is for.
     if let Some(mic_filter) = args.mic.as_deref() {
         match resolve_mic_by_substring(mic_filter) {
             Ok(name) => {
                 info!(filter = mic_filter, resolved = %name, "--mic override applied");
-                cfg_value.input_device = name;
+                // Front of the preference list, not the legacy single field:
+                // the pipeline reads `microphones`, so writing anywhere else
+                // means the flag is silently ignored. Keeping the rest of the
+                // list intact leaves the usual fallbacks in place if the
+                // requested device disappears mid-session.
+                cfg_value.prefer_microphone(&name);
             }
             Err(e) => {
                 anyhow::bail!("--mic '{}' did not match any input device: {e}", mic_filter);
