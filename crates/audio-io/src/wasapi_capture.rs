@@ -496,3 +496,212 @@ impl InlineConverter {
         &self.out
     }
 }
+
+#[cfg(test)]
+mod accumulator_tests {
+    use super::*;
+
+    /// Collect whatever the accumulator emits, so a test can look at the
+    /// frames rather than at a callback.
+    fn feed(acc: &mut FrameAccumulator, samples: &[f32]) -> Vec<Frame> {
+        let mut out = Vec::new();
+        acc.feed(samples, |f| out.push(*f));
+        out
+    }
+
+    #[test]
+    fn a_full_frame_comes_straight_back_out() {
+        let mut acc = FrameAccumulator::new();
+        let input: Vec<f32> = (0..FRAME_SAMPLES).map(|i| i as f32).collect();
+
+        let frames = feed(&mut acc, &input);
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].as_slice(), input.as_slice());
+    }
+
+    /// The engine hands us whatever it has — usually not a multiple of 480.
+    /// A partial frame has to be held and completed by the next buffer, in
+    /// order and with nothing dropped or repeated.
+    #[test]
+    fn a_partial_frame_is_carried_across_calls() {
+        let mut acc = FrameAccumulator::new();
+        let input: Vec<f32> = (0..FRAME_SAMPLES).map(|i| i as f32).collect();
+
+        assert!(feed(&mut acc, &input[..100]).is_empty(), "not a frame yet");
+        assert!(feed(&mut acc, &input[100..300]).is_empty());
+        let frames = feed(&mut acc, &input[300..]);
+
+        assert_eq!(frames.len(), 1, "the third chunk completes the frame");
+        assert_eq!(
+            frames[0].as_slice(),
+            input.as_slice(),
+            "samples were reordered or lost across the joins"
+        );
+    }
+
+    /// A big buffer must produce every whole frame in it and keep the rest.
+    #[test]
+    fn a_long_buffer_yields_every_whole_frame_and_holds_the_remainder() {
+        let mut acc = FrameAccumulator::new();
+        let total = FRAME_SAMPLES * 3 + 40;
+        let input: Vec<f32> = (0..total).map(|i| i as f32).collect();
+
+        let frames = feed(&mut acc, &input);
+        assert_eq!(frames.len(), 3);
+        for (n, frame) in frames.iter().enumerate() {
+            let start = n * FRAME_SAMPLES;
+            assert_eq!(
+                frame.as_slice(),
+                &input[start..start + FRAME_SAMPLES],
+                "frame {n} has the wrong samples"
+            );
+        }
+
+        // The 40 left over emerge once the next buffer tops them up.
+        let more: Vec<f32> = vec![-1.0; FRAME_SAMPLES - 40];
+        let frames = feed(&mut acc, &more);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(&frames[0][..40], &input[total - 40..]);
+        assert_eq!(frames[0][40], -1.0);
+    }
+
+    #[test]
+    fn an_empty_buffer_emits_nothing() {
+        let mut acc = FrameAccumulator::new();
+        assert!(feed(&mut acc, &[]).is_empty());
+    }
+
+    /// Nothing may be emitted that was not fed in: over a long run the frame
+    /// count has to track the sample count exactly.
+    #[test]
+    fn no_samples_are_invented_or_lost_over_a_long_run() {
+        let mut acc = FrameAccumulator::new();
+        let mut emitted = 0usize;
+        let mut fed = 0usize;
+        // Chunk sizes that never line up with 480.
+        for chunk in [7usize, 113, 480, 1021, 33, 962] {
+            let block = vec![0.5f32; chunk];
+            emitted += feed(&mut acc, &block).len();
+            fed += chunk;
+        }
+        assert_eq!(emitted, fed / FRAME_SAMPLES);
+    }
+}
+
+#[cfg(test)]
+mod converter_tests {
+    use super::*;
+
+    /// Peak amplitude, for checking a conversion didn't swallow the signal.
+    fn peak(x: &[f32]) -> f32 {
+        x.iter().fold(0.0f32, |a, s| a.max(s.abs()))
+    }
+
+    #[test]
+    fn a_matching_mono_device_passes_through_untouched() {
+        let mut c = InlineConverter::new(SAMPLE_RATE, 1, SAMPLE_RATE);
+        let input: Vec<f32> = (0..480).map(|i| (i as f32 / 480.0) - 0.5).collect();
+        assert_eq!(c.process(&input, 480), input.as_slice());
+    }
+
+    /// Stereo mics are the common case, and a downmix that took only the left
+    /// channel would sound fine right up until someone's mic is on the right.
+    #[test]
+    fn stereo_is_averaged_rather_than_half_discarded() {
+        let mut c = InlineConverter::new(SAMPLE_RATE, 2, SAMPLE_RATE);
+        // Interleaved L,R: left silent, right at full scale.
+        let input = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+        assert_eq!(c.process(&input, 3), &[0.5, 0.5, 0.5]);
+
+        let mut c = InlineConverter::new(SAMPLE_RATE, 2, SAMPLE_RATE);
+        let input = [0.4, 0.6, -0.2, 0.2];
+        let out = c.process(&input, 2);
+        assert!(
+            (out[0] - 0.5).abs() < 1e-6 && out[1].abs() < 1e-6,
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_four_channel_device_is_averaged_too() {
+        let mut c = InlineConverter::new(SAMPLE_RATE, 4, SAMPLE_RATE);
+        let input = [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 2.0];
+        assert_eq!(c.process(&input, 2), &[1.0, 0.5]);
+    }
+
+    /// 44.1 kHz mics are still everywhere. The output must come out at 48 k,
+    /// which means slightly *more* samples than went in.
+    #[test]
+    fn forty_four_one_is_resampled_up_to_forty_eight() {
+        let mut c = InlineConverter::new(44_100, 1, 48_000);
+        let input = vec![0.25f32; 441];
+        let out = c.process(&input, 441);
+
+        let expected = (441.0f64 * 48_000.0 / 44_100.0).round() as usize;
+        assert!(
+            out.len().abs_diff(expected) <= 1,
+            "got {} samples, expected about {expected}",
+            out.len()
+        );
+        // A constant in must stay that constant, not be attenuated by the
+        // interpolation.
+        assert!((peak(out) - 0.25).abs() < 1e-3, "peak was {}", peak(out));
+    }
+
+    /// The one that matters: the fractional read position carries across
+    /// calls. If it resets each time, the stream gains or loses a fraction of
+    /// a sample every 10 ms, which is an audible click every few seconds.
+    /// The one that matters: the fractional read position carries across
+    /// calls. If it resets each time, the stream gains a fraction of a sample
+    /// every buffer, which is an audible click every few seconds.
+    ///
+    /// The chunk size is deliberately 400 rather than 441. 441 samples at
+    /// 44.1 kHz is exactly 480 at 48 kHz, so a converter that threw its phase
+    /// away every call would still emit exactly 480 and look correct. 400 is
+    /// not commensurate, so only genuine continuity gives the right total.
+    #[test]
+    fn the_resampler_does_not_drift_across_calls() {
+        const CHUNK: usize = 400;
+        const CALLS: usize = 100;
+
+        let mut c = InlineConverter::new(44_100, 1, 48_000);
+        let chunk = vec![0.1f32; CHUNK];
+
+        let mut produced = 0usize;
+        for _ in 0..CALLS {
+            produced += c.process(&chunk, CHUNK).len();
+        }
+
+        let expected = (CHUNK as f64 * CALLS as f64 * 48_000.0 / 44_100.0).round() as usize;
+        assert!(
+            produced.abs_diff(expected) <= 2,
+            "produced {produced} samples, expected about {expected} — the phase is drifting \
+             (a converter that resets phase every call would produce {})",
+            CALLS * (CHUNK as f64 / (44_100.0 / 48_000.0)).ceil() as usize
+        );
+    }
+
+    #[test]
+    fn downmix_and_resample_compose() {
+        let mut c = InlineConverter::new(44_100, 2, 48_000);
+        let input: Vec<f32> = std::iter::repeat_n([0.0f32, 0.8], 441).flatten().collect();
+        let out = c.process(&input, 441);
+        assert!(out.len() >= 470, "expected upsampling, got {}", out.len());
+        assert!((peak(out) - 0.4).abs() < 1e-3, "peak was {}", peak(out));
+    }
+
+    /// A device running faster than 48 k gets decimated, and must not alias
+    /// its way into a longer buffer.
+    #[test]
+    fn a_ninety_six_kilohertz_device_is_halved() {
+        let mut c = InlineConverter::new(96_000, 1, 48_000);
+        let input: Vec<f32> = (0..960).map(|i| (i % 2) as f32).collect();
+        let out = c.process(&input, 960);
+        assert!(
+            out.len().abs_diff(480) <= 1,
+            "expected about 480 samples, got {}",
+            out.len()
+        );
+    }
+}

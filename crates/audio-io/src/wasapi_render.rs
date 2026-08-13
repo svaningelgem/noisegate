@@ -248,7 +248,6 @@ impl UpConverter {
             return 0;
         }
         let ratio = self.src_rate as f64 / self.dst_rate as f64;
-        let mut consumed_max = 0usize;
         for f in 0..frames {
             let pos = self.phase + f as f64 * ratio;
             let idx = pos as usize;
@@ -263,7 +262,6 @@ impl UpConverter {
             for c in 0..self.dst_channels {
                 *dst.add(f * self.dst_channels + c) = s;
             }
-            consumed_max = consumed_max.max(idx);
         }
         // Advance phase past the samples we used; keep the fractional part
         // so we don't drift across calls.
@@ -274,5 +272,129 @@ impl UpConverter {
             self.last = src[(consumed - 1).min(src.len() - 1)];
         }
         consumed.min(src.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `write_into` fills a raw engine buffer. Wrap it so tests can look at
+    /// what landed there: returns (interleaved output, source samples used).
+    fn render(uc: &mut UpConverter, src: &[f32], frames: usize) -> (Vec<f32>, usize) {
+        let mut buf = vec![f32::NAN; frames * uc.dst_channels];
+        let consumed = unsafe { uc.write_into(src, buf.as_mut_ptr(), frames) };
+        assert!(
+            !buf.iter().any(|s| s.is_nan()),
+            "left part of the engine buffer uninitialised — the engine would \
+             play whatever was in that memory"
+        );
+        (buf, consumed)
+    }
+
+    /// Every channel of the device gets the same mono sample. Writing only
+    /// channel 0 would come out of one side of a headset.
+    #[test]
+    fn mono_is_written_to_every_channel() {
+        let mut uc = UpConverter::new(SAMPLE_RATE, SAMPLE_RATE, 2);
+        let src = [0.5f32; 8];
+        let (out, _) = render(&mut uc, &src, 4);
+
+        assert_eq!(out.len(), 8, "4 frames x 2 channels");
+        for pair in out.chunks(2) {
+            assert_eq!(pair[0], pair[1], "channels disagree: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_surround_device_gets_all_six_channels_filled() {
+        let mut uc = UpConverter::new(SAMPLE_RATE, SAMPLE_RATE, 6);
+        let (out, _) = render(&mut uc, &[0.25f32; 4], 2);
+        assert_eq!(out.len(), 12);
+        for frame in out.chunks(6) {
+            assert!(
+                frame.iter().all(|&s| s == frame[0]),
+                "channels within a frame disagree: {frame:?}"
+            );
+        }
+    }
+
+    /// Nothing to play must be silence, not the previous contents of the
+    /// engine's buffer.
+    #[test]
+    fn an_empty_source_writes_real_silence() {
+        let mut uc = UpConverter::new(SAMPLE_RATE, SAMPLE_RATE, 2);
+        let (out, consumed) = render(&mut uc, &[], 4);
+        assert_eq!(consumed, 0);
+        assert!(out.iter().all(|&s| s == 0.0), "{out:?}");
+    }
+
+    /// At a matching rate the converter is a one-sample delay, and it must
+    /// consume exactly what it emits or the pending buffer grows without
+    /// bound.
+    #[test]
+    fn a_matching_rate_consumes_exactly_what_it_plays() {
+        let mut uc = UpConverter::new(SAMPLE_RATE, SAMPLE_RATE, 1);
+        let src: Vec<f32> = (1..=8).map(|i| i as f32).collect();
+        let (out, consumed) = render(&mut uc, &src, 8);
+
+        assert_eq!(consumed, 8, "consumed {consumed} to play 8 frames");
+        // One sample of delay: the first output is the previous call's tail
+        // (silence at start-up), then the input follows.
+        assert_eq!(out[0], 0.0);
+        assert_eq!(&out[1..], &src[..7]);
+    }
+
+    /// The device rate is whatever the mix format says; 44.1 kHz endpoints are
+    /// common. Playing 44.1 k frames needs fewer 48 k samples than frames.
+    #[test]
+    fn a_slower_device_consumes_more_source_than_it_plays() {
+        let mut uc = UpConverter::new(SAMPLE_RATE, 44_100, 2);
+        let src = vec![0.3f32; 1000];
+        let (_, consumed) = render(&mut uc, &src, 441);
+
+        let expected = (441.0f64 * 48_000.0 / 44_100.0).round() as usize;
+        assert!(
+            consumed.abs_diff(expected) <= 1,
+            "consumed {consumed} for 441 device frames, expected about {expected}"
+        );
+    }
+
+    /// The render counterpart of the capture drift test: phase has to carry
+    /// across calls, or the pending queue slowly fills or starves.
+    #[test]
+    fn consumption_stays_in_step_over_many_buffers() {
+        const FRAMES: usize = 400;
+        const CALLS: usize = 100;
+
+        let mut uc = UpConverter::new(SAMPLE_RATE, 44_100, 2);
+        let src = vec![0.2f32; 2048];
+
+        let mut consumed = 0usize;
+        for _ in 0..CALLS {
+            consumed += render(&mut uc, &src, FRAMES).1;
+        }
+
+        let expected = (FRAMES as f64 * CALLS as f64 * 48_000.0 / 44_100.0).round() as usize;
+        assert!(
+            consumed.abs_diff(expected) <= 2,
+            "consumed {consumed} over {CALLS} buffers, expected about {expected} — \
+             the pending queue would drift by {} samples a second",
+            (consumed as i64 - expected as i64).abs() * 48_000 / (FRAMES * CALLS) as i64
+        );
+    }
+
+    /// A constant signal must come out at the same level, whatever the rate.
+    #[test]
+    fn resampling_does_not_change_the_level() {
+        for rate in [44_100, 48_000, 96_000] {
+            let mut uc = UpConverter::new(SAMPLE_RATE, rate, 2);
+            let src = vec![0.75f32; 2048];
+            // Second call, so the interpolation is past its start-up sample.
+            render(&mut uc, &src, 200);
+            let (out, _) = render(&mut uc, &src, 200);
+            let peak = out.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+            assert!((peak - 0.75).abs() < 1e-3, "{rate} Hz gave peak {peak}");
+        }
     }
 }
