@@ -7,6 +7,7 @@
 #     "onnx>=1.15",
 #     "onnxruntime>=1.15",
 #     "numpy>=1.22,<2",
+#     "soundfile>=0.12",
 #     "MonkeyType",
 # ]
 # ///

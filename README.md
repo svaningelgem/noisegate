@@ -216,7 +216,7 @@ Two offline modes let you hear what the denoiser does before setting up any rout
 .\noisegate.exe --denoise raw.wav clean.wav
 
 # ...or with an ONNX model, capping suppression at 12 dB:
-.\noisegate.exe --denoise raw.wav clean.wav --model model.onnx --atten 12
+.\noisegate.exe --denoise raw.wav clean.wav --model dfn3_ours.tar.gz --atten 12
 ```
 
 `--denoise` reports the noise floor and the speech level separately, because whole-file loudness barely moves even when all the noise is gone:
@@ -249,7 +249,7 @@ To get DeepFilterNet3 quality:
 Confirm it loads and actually suppresses before touching any audio routing:
 
 ```powershell
-.\noisegate.exe --denoise noisy.wav clean.wav --model .\model.onnx
+.\noisegate.exe --denoise noisy.wav clean.wav --model .\dfn3_ours.tar.gz
 ```
 
 Pick an ONNX Runtime whose API version matches the `ort` crate this is pinned to — `ort` 2.0.0-rc.10 wants ONNX Runtime **1.22.x**.

@@ -64,7 +64,10 @@ Source: "{#SourceDir}\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; falls back to RNNoise, which does not remove background speech at all: the
 ; whole reason NoiseGate exists. The app picks it up automatically from
 ; alongside the executable.
-Source: "..\models\model.onnx";        DestDir: "{app}"; Flags: ignoreversion
+;
+; This is the export we build ourselves from the published checkpoint with
+; scripts/export_dfn3.py, not a prebuilt file of unknown provenance.
+Source: "..\models\dfn3_ours.tar.gz";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\models\NOTICE.md";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md";                DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\LICENSE-MIT";              DestDir: "{app}"; Flags: ignoreversion

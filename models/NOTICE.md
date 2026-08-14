@@ -1,6 +1,15 @@
 # Bundled model
 
-`model.onnx` is **DeepFilterNet3**, by Hendrik Schröter and contributors.
+Two files, both **DeepFilterNet3** by Hendrik Schröter and contributors.
+
+`dfn3_ours.tar.gz` is **what the app ships and loads**: upstream's three-graph
+export, built from the published checkpoint by `scripts/export_dfn3.py`
+(`uv run scripts/export_dfn3.py`). Every artefact in it is one we can
+regenerate.
+
+`model.onnx` is kept for provenance and backwards compatibility — see the
+caveat below. Installs from before the switch have it beside the executable and
+it still loads.
 
 - Upstream: <https://github.com/Rikorose/DeepFilterNet>
 - Paper: *DeepFilterNet: Perceptually Motivated Real-Time Speech Enhancement*,

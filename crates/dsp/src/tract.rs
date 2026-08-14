@@ -32,6 +32,24 @@ use ndarray::{Array2, ArrayView2};
 
 use crate::{Denoiser, DspError, Result, FRAME_SAMPLES};
 
+/// Both stages, on every frame, always.
+///
+/// Upstream's runner varies the treatment per 10 ms frame from the model's own
+/// SNR estimate: below `min_db_thresh` it zeroes the output, above
+/// `max_db_erb_thresh` it passes audio through untouched, between them it runs
+/// one stage or both. When the estimate sits near a boundary — which it does
+/// constantly on speech with background chatter — neighbouring frames get
+/// wholly different processing, and the seams are audible as cracking. On a
+/// 60 s sample it also produced 17 seconds of *exact* digital silence.
+///
+/// Pushing the thresholds out of reach keeps one treatment in force. That is
+/// not a tuning compromise: it makes the output bit-for-bit indistinguishable
+/// from the reference DeepFilterNet3 model (correlation 1.0000), because that
+/// single-graph export has no equivalent switching — it simply always applies
+/// both stages. See docs/model-pipeline.md.
+const NEVER: f32 = -100.0;
+const ALWAYS: f32 = 100.0;
+
 pub struct TractDenoiser {
     inner: DfTract,
     /// `process` wants 2-D `[channels, samples]` views, and we are always mono.
@@ -70,7 +88,10 @@ impl TractDenoiser {
         } else {
             attenuation_db
         };
-        let runtime = RuntimeParams::default_with_ch(1).with_atten_lim(atten);
+
+        let runtime = RuntimeParams::default_with_ch(1)
+            .with_atten_lim(atten)
+            .with_thresholds(NEVER, ALWAYS, ALWAYS);
 
         let inner = DfTract::new(params, &runtime)
             .map_err(|e| DspError::Load(format!("initialising the tract model: {e}")))?;

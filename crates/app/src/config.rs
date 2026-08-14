@@ -124,17 +124,26 @@ impl Config {
 }
 
 impl Config {
-    /// The ONNX model to offer in the tray, if there is one: whatever
-    /// `model_path` points at, else a `model.onnx` sitting next to the
-    /// executable so "drop the file in and pick it" works with no config
+    /// The model to offer in the tray, if there is one: whatever `model_path`
+    /// points at, else the first known filename sitting next to the
+    /// executable, so "drop the file in and pick it" works with no config
     /// editing at all.
+    ///
+    /// The `.tar.gz` is preferred because it is the one we build ourselves
+    /// from the published checkpoint (`scripts/export_dfn3.py`) and the one
+    /// the installer ships. `model.onnx` stays supported: it is what earlier
+    /// installs have beside them, and pointing `model_path` at any single-file
+    /// streaming export still works.
     pub fn available_model(&self) -> Option<PathBuf> {
         if !self.model_path.is_empty() {
             let p = PathBuf::from(&self.model_path);
             return p.exists().then_some(p);
         }
-        let beside = std::env::current_exe().ok()?.parent()?.join("model.onnx");
-        beside.exists().then_some(beside)
+        let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        ["dfn3_ours.tar.gz", "model.onnx"]
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|p| p.exists())
     }
 
     /// The model to actually load, honouring the on/off switch.

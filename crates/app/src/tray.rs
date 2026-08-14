@@ -433,7 +433,11 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         // Explain the absence rather than silently offering one option.
         (true, None) => {
             dsp_menu
-                .append(&MenuItem::new("(no model.onnx found)", false, None))
+                .append(&MenuItem::new(
+                    "(no model found next to the app)",
+                    false,
+                    None,
+                ))
                 .ok();
         }
         (false, _) => {
@@ -626,8 +630,8 @@ impl App {
                 // Nothing to load yet — say where to put it and stay put.
                 let expected = std::env::current_exe()
                     .ok()
-                    .and_then(|p| p.parent().map(|d| d.join("model.onnx")))
-                    .unwrap_or_else(|| std::path::PathBuf::from("model.onnx"));
+                    .and_then(|p| p.parent().map(|d| d.join("dfn3_ours.tar.gz")))
+                    .unwrap_or_else(|| std::path::PathBuf::from("dfn3_ours.tar.gz"));
                 crate::firstrun::model_missing(&expected);
                 if let Some(items) = &self.items {
                     for d in &items.denoisers {

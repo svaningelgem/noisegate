@@ -106,6 +106,43 @@ is bit-exact against libDF. Steps 4–6 are what remains.
 `df_lookahead = 2`, so output for frame *t* uses noisy frames *t+2 … t-2* and
 the result lags the input by two hops (960 samples).
 
+## Stage switching is off, deliberately
+
+`libDF`'s runner picks a different treatment for every 10 ms frame from the
+model's own SNR estimate:
+
+| lsnr | treatment |
+|---|---|
+| < `min_db_thresh` | output zeroed |
+| > `max_db_erb_thresh` | passed through untouched |
+| > `max_db_df_thresh` | ERB mask only |
+| otherwise | ERB mask + deep filter |
+
+On speech with background chatter the estimate sits near a boundary
+constantly, so neighbouring frames get wholly different processing and the
+seams are audible — it sounds like the voice cracking. On a 60-second sample
+it also produced **17 seconds of exact digital silence**.
+
+`crates/dsp/src/tract.rs` pushes the thresholds out of reach (`NEVER` /
+`ALWAYS`) so one treatment stays in force. This is not a tuning compromise. The
+single-file DeepFilterNet3 export everyone compares against has no equivalent
+switching — it is one graph that always runs both stages — so disabling it is
+what makes us *match* the reference rather than approximate it:
+
+| variant | correlation vs reference | silent seconds |
+|---|---|---|
+| stage switching on | 0.9295 | 17 |
+| **switching off (shipped)** | **1.0000** | 1 |
+| switching off + 25 dB limit | 0.9997 | 0 |
+
+Measured end to end, the shipped build differs from the reference by at most
+**one sample step out of 32768** — float rounding through a differently shaped
+graph, inaudible.
+
+The 25 dB variant is worth remembering: it never emits digital silence at all,
+at the cost of a little background. If the reference's silences ever feel like
+a dropped call, that is the knob — `attenuation_db` in config.toml.
+
 ## Verification status
 
 `scripts/onnx3_runner.py` runs the three graphs over a whole file and applies

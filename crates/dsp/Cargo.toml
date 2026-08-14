@@ -12,7 +12,7 @@ keywords = ["noise-suppression", "rnnoise", "speech-enhancement", "real-time", "
 categories = ["multimedia::audio", "science"]
 
 [features]
-default = ["rnnoise", "onnx"]
+default = ["rnnoise", "tract", "onnx"]
 # nnnoiseless: pure-Rust port of Xiph's RNNoise. Mature, MIT, ~85 KB model
 # embedded. Ships everywhere Rust does. Quality: good but classical-RNN era.
 rnnoise = ["dep:nnnoiseless"]
