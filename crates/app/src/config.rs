@@ -136,8 +136,18 @@ impl Config {
     /// streaming export still works.
     pub fn available_model(&self) -> Option<PathBuf> {
         if !self.model_path.is_empty() {
-            let p = PathBuf::from(&self.model_path);
-            return p.exists().then_some(p);
+            let configured = PathBuf::from(&self.model_path);
+            if configured.exists() {
+                return Some(configured);
+            }
+            // Deliberately fall through rather than give up. The path may
+            // predate an upgrade or a moved install, and dropping silently to
+            // RNNoise means no background-speech removal — the one thing the
+            // app exists for — while a usable model sits beside the exe.
+            tracing::warn!(
+                path = %configured.display(),
+                "configured model is missing; looking beside the executable"
+            );
         }
         let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
         ["dfn3_ours.tar.gz", "model.onnx"]
@@ -280,6 +290,36 @@ mod tests {
         );
     }
 
+    /// A `model_path` pointing at a file that has been moved or deleted must
+    /// not disable the model outright. Before this fell through, an upgrade or
+    /// a moved install left the user on RNNoise — no background-speech removal
+    /// at all — with a perfectly good model sitting beside the executable.
+    #[test]
+    fn a_stale_model_path_falls_back_to_the_bundled_model() {
+        let dir = std::env::temp_dir().join(format!("noisegate-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let beside = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("dfn3_ours.tar.gz");
+        std::fs::write(&beside, b"stand-in for the bundled model").unwrap();
+
+        let c = Config {
+            model_path: dir.join("moved-away.onnx").to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        assert_eq!(
+            c.available_model(),
+            Some(beside.clone()),
+            "a configured path that no longer exists should fall through to \
+             what is shipped, not leave the user with no model"
+        );
+
+        let _ = std::fs::remove_file(&beside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The tray offers whatever `model_path` points at, but only if it is
     /// really there — a stale path must fall back to RNNoise, not fail.
     #[test]
@@ -307,15 +347,23 @@ mod tests {
 
     #[test]
     fn an_onnx_model_is_only_active_when_switched_on() {
+        // A real file, so this tests the switch and not whether some model
+        // happens to be sitting beside the test binary.
+        let dir = std::env::temp_dir().join(format!("noisegate-switch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("present.onnx");
+        std::fs::write(&model, b"stand-in").unwrap();
+
         let mut c = Config {
-            model_path: "nonexistent.onnx".into(),
+            model_path: model.to_string_lossy().into_owned(),
             use_onnx: false,
             ..Config::default()
         };
         assert!(c.active_model().is_none(), "off means off");
-        // With use_onnx on, a path that does not exist still yields nothing,
-        // so the pipeline falls back to RNNoise rather than failing.
+
         c.use_onnx = true;
-        assert!(c.active_model().is_none());
+        assert_eq!(c.active_model(), Some(model), "on means the chosen model");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,276 +1,179 @@
 # NoiseGate
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4.svg)](#install)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Model: RNNoise + ONNX](https://img.shields.io/badge/model-RNNoise%20%2B%20ONNX-purple.svg)](#noise-suppression-model)
-[![Latest release](https://img.shields.io/github/v/release/Yashsomalkar/noisegate?include_prereleases&label=download)](https://github.com/Yashsomalkar/noisegate/releases)
+[![Model: DeepFilterNet3](https://img.shields.io/badge/model-DeepFilterNet3-purple.svg)](#the-model)
+[![No network code](https://img.shields.io/badge/network%20code-none-brightgreen.svg)](#privacy)
 
-**Keeps your voice on the call and leaves the rest of the room behind.** Real-time microphone processing for Windows that removes the people talking *around* you — a child in the next room, a partner on a phone call, an office two desks away — not just fans and keyboard clatter. Pure-Rust, WASAPI low-latency capture/render, system-tray UI. Cleaned audio goes into a virtual cable so Zoom, Teams, Discord, OBS or a browser call just sees a quiet microphone.
+### Your voice goes to the call. The rest of the room doesn't.
 
-> Status: pre-alpha. Builds on Windows 10/11 with the MSVC toolchain.
+Everything removes fans and keyboard clatter. NoiseGate removes **the people talking around you** — the child in the next room, a partner on the phone, the desk behind you — and leaves your own voice untouched.
 
-## Why this and not the others
+It runs in the tray, uses about 4% of one core, and needs nothing from the internet.
 
-Ordinary noise suppression solves the easy half of the problem. Fans, hum and typing are *stationary* noise, and everything removes those — Windows does some of it for free. What almost nothing removes is **other people's voices**, because every speech-enhancement model is trained to *preserve* speech, and your neighbour is speech.
+> **Status: pre-alpha.** Windows 10/11, MSVC toolchain. It works and it is in daily use, but it has not been through many hands yet.
 
-That turns out to be measurable. Same 60-second recording — one person talking at the microphone, a child talking loudly across the room — through four backends. The middle of the level distribution is where background speech lives; the top is the near voice:
+---
+
+## The problem nobody else solves
+
+Fans, hum and typing are *stationary* noise. Every denoiser handles those; Windows does some of it for free.
+
+Your neighbour's voice is a different problem — because every speech-enhancement model is trained to **preserve speech**, and your neighbour is speech.
+
+Here is the same 60-second recording — one person at the microphone, a child talking loudly across the room — through four backends. Background speech is the middle of the level distribution; your own voice is the top:
 
 | backend | background speech | your voice |
 |---|---|---|
 | **DeepFilterNet3** | **−19.3 dB** | −0.1 dB |
 | GTCRN | −11.1 dB | −0.9 dB |
 | RNNoise | −6.5 dB | −0.4 dB |
-| MossFormer2 (48 kHz, newer, larger) | −5.5 dB | −0.2 dB |
+| MossFormer2 (newer, larger) | −5.5 dB | −0.2 dB |
 
-The newest, largest model came last: it is very good at enhancing speech, so it faithfully preserves the voice you wanted gone. DeepFilterNet3 is the outlier — it discriminates on proximity and reverberation, which is exactly the cue that separates you from the room.
+The newest and largest model came **last**. It is excellent at enhancing speech, so it faithfully preserves the voice you wanted gone.
 
-So NoiseGate ships DeepFilterNet3 as its default and treats "surrounding conversation" as the problem worth solving. It's free, open source, runs on any CPU — no Krisp subscription, no RTX card, no Linux.
+DeepFilterNet3 is the outlier: it discriminates on proximity and reverberation, which is exactly the cue that separates *you* from *the room*. So that is what NoiseGate ships, tuned for surrounding conversation rather than hiss.
 
-*(Reproduce it yourself: `noisegate --denoise noisy.wav clean.wav`, which reports these numbers. RNNoise stays available as a low-CPU fallback at ~50× less compute.)*
+You can reproduce the whole table yourself — `noisegate --denoise noisy.wav clean.wav` prints those numbers.
 
-## Stack
-
-- **Audio I/O:** WASAPI shared low-latency, event-driven, MMCSS Pro Audio scheduling.
-- **Routing:** VB-Cable (free virtual audio cable, [vb-audio.com](https://vb-audio.com/Cable/)).
-- **DSP model:** **DeepFilterNet3** by default via ONNX Runtime. **RNNoise** (the pure-Rust [`nnnoiseless`](https://github.com/jneem/nnnoiseless) port) as a zero-dependency, low-CPU fallback.
-- **UI:** `tray-icon` + `winit` event loop.
-- **Lang:** Rust 2021, single static binary, ~10 MB stripped (RNNoise default), ~25 MB with ONNX runtime.
-
-## Architecture
-
-```
-physical mic ─► WASAPI capture ─► ring A ─► DSP thread (denoiser) ─► ring B ─► WASAPI render ─► VB-Cable Input
-                                                                                                        │
-                                                               other apps choose "CABLE Output" as mic ◄┘
-```
-
-Three dedicated MMCSS-priority threads. Lock-free SPSC ring buffers (8 frames ≈ 80 ms headroom). 480-sample (10 ms) frames end-to-end — the native frame size for both RNNoise and DeepFilterNet, so no reblocking inside the DSP path.
-
-## Noise suppression model
-
-Two backends, both real-time, switchable from the tray while running:
-
-| Backend | Default? | Background speech | CPU | Needs |
-|---|---|---|---|---|
-| **DeepFilterNet3** (ONNX) | ✅ | −19 dB | ~15% of one core (RTF 0.15) | `onnxruntime.dll` (bundled) + a model file |
-| **RNNoise** (`nnnoiseless`) | fallback | −6.5 dB | ~0.3% of one core (RTF 0.003) | nothing — model embedded |
-
-RNNoise is still worth having: it needs no download at all, runs on any architecture Rust targets, and costs ~50× less compute, which matters on an old laptop or on battery. It's genuinely good at fans, hum and hiss. It just can't touch a voice in the next room, because it was trained not to.
-
-NoiseGate falls back to RNNoise on its own if no ONNX model is present, so it always does something useful.
+---
 
 ## Install
 
-### Option A — Run the installer (recommended)
+**[Download the installer](https://github.com/Yashsomalkar/noisegate/releases)** and run it. Per-user, no administrator prompt, no driver.
 
-Grab `NoiseGate-x.y.z-setup.exe` from the **[Releases page](https://github.com/Yashsomalkar/noisegate/releases)** and run it. It installs per-user, so there's no administrator prompt, and it offers to start NoiseGate when you sign in.
+The model ships inside it. Nothing is downloaded on first run, and there is no "now go and fetch a 16 MB file from Hugging Face" step.
 
-The installer includes the ONNX Runtime it needs. On first run NoiseGate will tell you if a virtual audio cable is missing and offer to open the download page — see [Install a virtual audio cable](#install-a-virtual-audio-cable).
+You also need a **virtual audio cable** — the thing that lets other apps hear the cleaned microphone. NoiseGate explains this on first run and offers to open the download page. [VB-Cable](https://vb-audio.com/Cable/) is free and takes about two minutes.
 
-Building the installer yourself:
+Then, in Zoom, Teams, Discord, OBS or your browser: **pick `CABLE Output` as your microphone.** That's it.
 
-```powershell
-cargo build --release --features onnx
-ISCC.exe installer\noisegate.iss     # Inno Setup 6
-```
-
-### Option B — Build from source
-
-You need three things on your Windows 10/11 machine:
-
-| # | Component | Download | Notes |
-|---|---|---|---|
-| 1 | **Rust toolchain** | [rustup-init.exe](https://win.rustup.rs/x86_64) — or visit [rustup.rs](https://rustup.rs/) | Pick the default (`stable`, `x86_64-pc-windows-msvc`). |
-| 2 | **MSVC C++ build tools** | [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | In the installer, check **"Desktop development with C++"** (gives you `link.exe` + the Windows SDK). |
-| 3 | **VB-Cable virtual audio driver** | [vb-audio.com/Cable](https://vb-audio.com/Cable/) ([direct ZIP](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip)) | Extract, run `VBCABLE_Setup_x64.exe` as Administrator, reboot. |
-| 4 | **Git** *(probably already installed)* | [git-scm.com/download/win](https://git-scm.com/download/win) | Used to clone the repo. |
-
-Then in PowerShell:
+<details>
+<summary><b>Build from source instead</b></summary>
 
 ```powershell
-git clone https://github.com/Yashsomalkar/noisegate.git
+git clone https://github.com/Yashsomalkar/noisegate
 cd noisegate
 cargo build --release
-.\target\release\noisegate.exe
 ```
 
-First build pulls ~300 MB of crates and takes 5-10 minutes. Subsequent builds are seconds.
+The default build includes everything: RNNoise, DeepFilterNet3 via tract, and the ONNX loader. The model is in `models/`, so a fresh clone gives you a working binary.
 
-A tray icon appears in the system tray (bottom-right corner of your taskbar) — no console window; NoiseGate is a GUI-subsystem binary. Right-click the icon for the menu:
+Requires the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`).
+</details>
 
-| Item | What it does |
+---
+
+## Using it
+
+Left-click the tray icon to toggle denoising. The icon shows the state at a glance:
+
+| | |
 |---|---|
-| **Enabled** | Toggles denoising. Unchecked = bypass, audio still flows. **Left-clicking the tray icon** does the same thing, so the common action needs one click. |
-| **Microphone ▸** | Pick the input device. **Windows default** is selected out of the box and follows whatever Windows is using. Switching restarts the audio pipeline in place and is remembered. |
-| **Start with Windows** | Adds/removes a `NoiseGate` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Per-user, no elevation. There is deliberately no config setting for this — the registry is the state, so the checkbox can never disagree with what Windows will actually do. |
-| **Open log folder** | Opens `%APPDATA%\NoiseGate\logs`. |
-| **Quit NoiseGate** | Exits. |
+| **teal** | on, cleaning your microphone |
+| **orange** | bypassed, passing audio straight through |
+| **⚠ badge** | audio is not flowing — the device went away, and it is trying to recover |
 
-The icon itself reports state at a glance:
+Right-click for the menu: pick a microphone, switch backend, toggle start-with-Windows, open the log folder.
 
-| Icon | Meaning |
-|---|---|
-| Blue-green disc | Denoising is **on**. |
-| Orange disc | **Bypassed** — audio still flows, unprocessed. |
-| ⚠ badge on the corner | **Audio isn't running at all** (no cable, no mic, device failed). |
+**Microphones are remembered in preference order.** Click one and it becomes first choice; the rest shift down. Unplug it mid-call and the next one down takes over on its own, rather than the app stopping to ask. Plug it back in and it is picked up again.
 
-Hovering shows the active backend, ON/BYPASS, and a CPU meter.
+A cable's own output is greyed out in the picker, because selecting it would have NoiseGate record from the very cable it writes into.
 
-The command-line flags still work when you run it from a terminal — NoiseGate attaches to the calling console (and leaves redirection to a file or pipe alone). If audio can't start, you get a dialog explaining why and the tray stays up, so you can fix the problem and pick a microphone without relaunching.
+---
 
-### Install a virtual audio cable
+## Try it without touching your audio setup
 
-NoiseGate is a normal user-mode application. Windows lets it *read* a microphone and *write* to an output, but there is no user-mode API to publish a new microphone that other apps can select — that needs a kernel-mode audio driver. So a virtual cable supplies the "microphone" half:
-
-```
-real mic ─► NoiseGate ─► CABLE Input  ║  CABLE Output ─► Zoom / Teams / Discord
-                                      ╚══ the cable ══╝
-```
-
-**VB-Cable** is the usual choice: free ([donationware](https://vb-audio.com/Cable/)), properly signed, five minutes to install.
-
-1. Download the driver pack from **<https://vb-audio.com/Cable/>**.
-2. Extract the zip anywhere.
-3. Right-click **`VBCABLE_Setup_x64.exe`** → **Run as administrator**, then click **Install Driver**.
-4. Reboot if it asks. The endpoints often appear immediately.
-
-Confirm it worked:
+You do not have to install a cable, or route anything, to hear what it does:
 
 ```powershell
-.\noisegate.exe --list-devices
+# Record 10 seconds from your microphone
+.\noisegate.exe --record 10 test.wav
+
+# Clean it up
+.\noisegate.exe --denoise test.wav clean.wav
 ```
 
-You should see `CABLE Output (VB-Audio Virtual Cable)` under inputs and `CABLE Input (VB-Audio Virtual Cable)` under outputs, the latter tagged `[VB-Cable]`.
+It prints what it did:
 
-> **Two things the installer changes that catch people out.**
->
-> It makes the cable the **default device for both playback and recording**. That means your speakers/headphones go silent — system audio is now going into the cable. Open **Sound settings** and set your real output back as default.
->
-> It also becomes the default **microphone**, which for NoiseGate specifically means "use the Windows default mic" would capture from the cable we render into — the cable feeding itself. NoiseGate detects that and refuses to start rather than looping; pick your real microphone from the tray menu.
-
-Any cable works, not just VB-Audio's — NoiseGate also recognises VoiceMeeter and Virtual Audio Cable endpoints. For anything else, set `output_device_id` in `config.toml` to its id from `--list-devices`.
-
-Open-source virtual audio drivers exist ([Virtual-Audio-Driver](https://github.com/VirtualDrivers/Virtual-Audio-Driver), [AudioMirror](https://github.com/JannesP/AudioMirror), and others) and are perfectly good code, but none ship a production-signed binary — they need Windows test-signing mode enabled, which disables a system-wide security boundary. That's why the recommendation is a signed third-party cable rather than one we bundle. NoiseGate can't ship its own driver either: Microsoft [attestation signing](https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/code-signing-attestation) requires an EV certificate (~$280–580/year) held by a registered company.
-
-### Set up audio routing
-
-Once NoiseGate is running, point your communication apps at VB-Cable instead of your real microphone:
-
-1. Open **Windows Sound Settings** → **Sound** → **Input**.
-2. Verify **CABLE Output (VB-Audio Virtual Cable)** is in the device list. If not, the VB-Cable install didn't finish — re-run step 3 above.
-3. In Zoom / Teams / Discord / OBS / browser settings, choose **CABLE Output** as the microphone.
-
-NoiseGate captures from your real mic, denoises, and writes the cleaned signal into **CABLE Input**. Apps that listen to **CABLE Output** then receive your noise-free voice.
-
-> If NoiseGate can't find the CABLE Input endpoint it **stops with an error** instead of picking another output. That's deliberate: falling back to the default render device would play your microphone out of whatever speakers, headset or meeting-room display happens to be default. Install VB-Cable, or set `output_device_id` explicitly.
-
-> **Sanity test**: open the Windows **Voice Recorder** app, set its mic to **CABLE Output**, record 10 seconds with a fan / typing in the background. Toggle NoiseGate's tray Enable off and re-record. The difference should be obvious.
-
-## Picking a specific microphone
-
-By default NoiseGate captures from your **system default mic**. If that's a Bluetooth headset, Windows will switch the headset into **HFP/Hands-Free mode** as soon as we open the mic — that's a Windows-wide behavior, not a NoiseGate bug, and it sounds awful (16 kHz mono, glitchy). Pick your USB or built-in mic instead.
-
-Easiest way is the tray: right-click the icon → **Microphone** → pick one. The choice is saved and applied immediately. From the command line:
-
-```powershell
-# See what's available:
-.\noisegate.exe --list-devices
-
-# Run with a specific mic (substring match on the friendly name):
-.\noisegate.exe --mic "USB"
-.\noisegate.exe --mic "Yeti"
-.\noisegate.exe --mic "Realtek"
+```
+noise_floor="-67.1 -> -100.2 dB (-33.2)"  speech="-25.4 -> -26.0 dB (-0.7)"  rtf="0.038"
 ```
 
-For a permanent choice, copy the device `id` from `--list-devices` into `%APPDATA%\NoiseGate\config.toml`:
+33 dB off the background, 0.7 dB off your voice, at 26× realtime. That is the whole product in one line.
 
-```toml
-input_device_id = "{0.0.1.00000000}.{...your-id...}"
+---
+
+## Privacy
+
+**There is no network code in this program.** No telemetry, no update check, no model download, no crash reporting. The binary does not link a HTTP client.
+
+Your microphone audio goes to the DSP thread and into the virtual cable. Nowhere else. This started as a security audit of an audio app, and that property is deliberate — the model is bundled precisely so that first run does not need to fetch anything.
+
+The only things NoiseGate writes are `%APPDATA%\NoiseGate\config.toml` and a log file that rotates at 5 MB. The log records device names, so it is worth a glance before pasting into a bug report.
+
+---
+
+## The model
+
+DeepFilterNet3, by [Hendrik Schröter](https://github.com/Rikorose/DeepFilterNet) — dual MIT/Apache-2.0, which is why we can ship it. Attribution travels with it in [`models/NOTICE.md`](models/NOTICE.md).
+
+We do not ship someone's prebuilt file. The model is **exported from the published checkpoint by a script in this repo**, so every artefact in the chain can be rebuilt:
+
+```bash
+uv run scripts/export_dfn3.py
 ```
+
+That fetches the checkpoint, converts it, and writes the model the app loads. No clone, no Rust toolchain, no manual pip — [uv](https://docs.astral.sh/uv/) handles the environment. [`docs/model-pipeline.md`](docs/model-pipeline.md) covers how it works and the several traps involved.
+
+Two backends, switchable from the tray while running:
+
+| backend | background speech | CPU | needs |
+|---|---|---|---|
+| **DeepFilterNet3** (default) | −19 dB | ~4% of one core | nothing — bundled |
+| **RNNoise** | −6.5 dB | ~0.3% of one core | nothing — embedded |
+
+RNNoise earns its place: ~50× less compute, no model file at all, and genuinely good at fans and hiss. It simply cannot touch a voice in the next room, because it was trained not to. NoiseGate falls back to it automatically if no model is found, so it always does something useful.
+
+---
 
 ## Configuration
 
-`%APPDATA%\NoiseGate\config.toml` — created on first run:
+`%APPDATA%\NoiseGate\config.toml` — created on first run, edited live by the tray menu.
 
 ```toml
-input_device = ""            # microphone by name; empty = Windows default
-output_device = ""           # by name; empty = auto-detect a virtual cable
-enabled = true
-attenuation_db = 100.0       # 6.0 = subtle, 100.0 = max. ONNX models only;
-                             # RNNoise has no equivalent knob.
-model_path = ""              # ONNX model to use instead of RNNoise
+microphones = ["Microphone (Yeti)", "Microphone (Webcam)"]  # preference order
+output_device = ""        # empty = find the virtual cable automatically
+enabled = true            # master on/off
+use_onnx = true           # false = RNNoise
+attenuation_db = 100.0    # how hard to suppress; 100 = no limit, 25 = gentler
+model_path = ""           # empty = use the model beside the executable
 ```
 
-Logs at `%APPDATA%\NoiseGate\logs\noisegate.log` (rolled over at 5 MB). Tune verbosity with `RUST_LOG=noisegate=debug`.
+Devices are named, not numbered. Endpoint IDs are opaque GUIDs that change every time you replug a device — names survive.
 
-## Trying it without VB-Cable
+**`attenuation_db` is the one worth knowing about.** At 100 the model may suppress as much as it likes, which occasionally means a passage of exact digital silence between sentences. If that reads as a dropped call to the person listening, try 25: a little background stays, and the output never goes fully dead.
 
-Two offline modes let you hear what the denoiser does before setting up any routing:
+---
 
-```powershell
-# Record 10 seconds from your mic (48 kHz mono WAV):
-.\noisegate.exe --record 10 raw.wav
-
-# Run it through the denoiser:
-.\noisegate.exe --denoise raw.wav clean.wav
-
-# ...or with an ONNX model, capping suppression at 12 dB:
-.\noisegate.exe --denoise raw.wav clean.wav --model dfn3_ours.tar.gz --atten 12
-```
-
-`--denoise` reports the noise floor and the speech level separately, because whole-file loudness barely moves even when all the noise is gone:
+## How it works
 
 ```
-noise_floor="-58.1 -> -106.0 dB (-47.9)" speech="-21.9 -> -23.4 dB (-1.6)" rtf="0.003"
+physical mic ─► WASAPI capture ─► ring A ─► DSP thread ─► ring B ─► WASAPI render ─► CABLE Input
+                                                                                          │
+                                                     other apps select "CABLE Output" ◄────┘
 ```
 
-## Cargo features
+Three dedicated MMCSS "Pro Audio" threads, lock-free SPSC ring buffers with 80 ms of headroom, 480-sample (10 ms) frames end to end — the native frame size for both models, so nothing is reblocked inside the DSP path.
 
-| Flag | Default | What it does |
-|---|---|---|
-| `rnnoise` | ✅ on | RNNoise backend via `nnnoiseless`. Pure-Rust, model embedded, no extra runtime deps. |
-| `onnx` | off | Adds ONNX Runtime as a dependency so you can load a streaming noise-suppression ONNX model (e.g. DFN3). Needs `onnxruntime.dll` **next to `noisegate.exe`**, or `ORT_DYLIB_PATH` pointing at it — we don't let the OS search PATH and the working directory for it. |
+A watchdog watches both halves. WASAPI reports a dead stream by simply never signalling again — no error, no callback — so the honest signal is whether frames are still moving. If either the capture or the output side stops, the icon badges and the pipeline is rebuilt quietly, without a dialog interrupting your call.
 
-The loader expects a **streaming** export: one frame of raw audio in, one frame out, with the recurrent state handed back on every call (`input_frame` / `states` / `atten_lim_db` in; enhanced audio + new states out). Tensor names are matched loosely and the state width is read from the model, so most DeepFilterNet3 stream exports load with no code change. Encoder/decoder-split exports, and models wanting a spectrum rather than raw audio, need their own front-end and won't load.
-
-Build with the ONNX backend in addition to RNNoise:
-
-```powershell
-cargo build --release -p noisegate -F onnx
-```
-
-To get DeepFilterNet3 quality:
-1. Build with `-F onnx`.
-2. Download the DFN3 ONNX export from Hugging Face: <https://huggingface.co/Rikorose/DeepFilterNet3>.
-3. Drop `onnxruntime.dll` next to `noisegate.exe` (download from <https://github.com/microsoft/onnxruntime/releases> — pick the `win-x64` zip). It must sit beside the exe: NoiseGate loads it by absolute path rather than searching PATH.
-4. Point `model_path` in `config.toml` at the ONNX file.
-
-Confirm it loads and actually suppresses before touching any audio routing:
-
-```powershell
-.\noisegate.exe --denoise noisy.wav clean.wav --model .\dfn3_ours.tar.gz
-```
-
-Pick an ONNX Runtime whose API version matches the `ort` crate this is pinned to — `ort` 2.0.0-rc.10 wants ONNX Runtime **1.22.x**.
-
-## License
-
-Code: dual MIT / Apache-2.0 — your choice.
-
-The bundled RNNoise model (via `nnnoiseless`) is BSD-licensed — fine for any use including commercial. If you opt into the ONNX backend with DeepFilterNet3 weights, those are research / non-commercial; for commercial use, retrain on your own data or pick a different ONNX model.
-
-## Cost
-
-$0 for personal use. Every component is free. No driver-signing certs required (we don't ship a driver — VB-Cable does).
+---
 
 ## Contributing
 
-Every pull request runs format, lint, build, test and a coverage ratchet on
-Windows — see [`docs/testing.md`](docs/testing.md). The coverage threshold is a
-floor that may be raised but never lowered; the long-term goal is 100%, and the
-doc is honest about which parts of the codebase can't get there without a
-hardware abstraction that doesn't exist yet.
+Every pull request runs format, lint, build, test and a coverage ratchet on Windows.
 
 ```powershell
 cargo fmt --all -- --check
@@ -278,28 +181,36 @@ cargo clippy --all-targets --all-features
 cargo test --all-features
 ```
 
-## Not included (yet)
+[`docs/testing.md`](docs/testing.md) explains the ratchet — a floor that may be raised but never lowered — and is honest about which parts cannot be covered without hardware, and about two fixes that have no test at all and why.
 
-- macOS / Linux backends (the audio-io crate is Windows-only; the rest is portable).
-- Far-end denoising (cleaning the audio you *hear* from the call — only your mic is cleaned).
-- Acoustic echo cancellation (combine with an AEC frontend if needed).
-- Auto-update.
+Tests are written **test-first**: write it, watch it fail for the right reason, then fix. A regression test that has never been seen to fail is not a regression test.
+
+---
+
+## Not included
+
+- macOS / Linux (the `audio-io` crate is Windows-only; the rest is portable)
+- Far-end denoising — only your microphone is cleaned, not what you hear
+- Acoustic echo cancellation
+- Auto-update
+
+---
 
 ## Credits
 
-Built on top of excellent open-source work:
+- **[DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)** — Hendrik Schröter et al. The model, and the tract runner that streams it correctly.
+- **[RNNoise](https://gitlab.xiph.org/xiph/rnnoise)** — Jean-Marc Valin / Xiph.Org, via **[`nnnoiseless`](https://github.com/jneem/nnnoiseless)** by jneem.
+- **[VB-Cable](https://vb-audio.com/Cable/)** — VB-Audio. The free virtual driver every Windows routing app depends on.
+- **[`windows`](https://github.com/microsoft/windows-rs)**, **[`tray-icon`](https://github.com/tauri-apps/tray-icon)**, **[`winit`](https://github.com/rust-windowing/winit)**, **[`ringbuf`](https://github.com/agerasev/ringbuf)**, **[`ort`](https://github.com/pykeio/ort)**.
+- Inspired by **[NoiseTorch](https://github.com/noisetorch/NoiseTorch)**, the Linux equivalent.
 
-- **[RNNoise](https://gitlab.xiph.org/xiph/rnnoise)** by Jean-Marc Valin / Xiph.Org — the recurrent-network noise-suppression model that powers the default backend.
-- **[`nnnoiseless`](https://github.com/jneem/nnnoiseless)** by jneem — pure-Rust port of RNNoise; this is the actual crate doing the work.
-- **[DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)** by Hendrik Schröter et al. — the modern speech-enhancement model that the optional ONNX backend can run.
-- **[ONNX Runtime](https://onnxruntime.ai/)** + the **[`ort`](https://github.com/pykeio/ort)** Rust bindings — power the optional `onnx` backend.
-- **[VB-Cable](https://vb-audio.com/Cable/)** by VB-Audio — the free virtual audio driver every Windows audio-routing app depends on.
-- **[`windows`](https://github.com/microsoft/windows-rs)** crate by Microsoft — official Win32 bindings for Rust (WASAPI, MMCSS, COM).
-- **[`tray-icon`](https://github.com/tauri-apps/tray-icon)** + **[`winit`](https://github.com/rust-windowing/winit)** — system-tray UI and event loop.
-- **[`ringbuf`](https://github.com/agerasev/ringbuf)** — the lock-free SPSC buffers that connect the audio threads.
-- Inspired by **[NoiseTorch](https://github.com/noisetorch/NoiseTorch)** (Linux-only equivalent that uses RNNoise).
+## Licence
+
+Code: **MIT or Apache-2.0**, your choice.
+
+The bundled DeepFilterNet3 weights are MIT/Apache-2.0 — redistributable, commercial use included. RNNoise is BSD. There is nothing here you cannot ship.
 
 ## Issues & discussion
 
-- Bug reports / feature requests: [open an issue](https://github.com/Yashsomalkar/noisegate/issues).
-- Questions, ideas, "is X possible?" — [Discussions](https://github.com/Yashsomalkar/noisegate/discussions).
+- [Report a bug or request a feature](https://github.com/Yashsomalkar/noisegate/issues)
+- [Discussions](https://github.com/Yashsomalkar/noisegate/discussions) for questions and ideas
