@@ -45,13 +45,14 @@ Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned
 
 ## Install
 
-**[Download the installer](https://github.com/svaningelgem/noisegate/releases)** and run it. Per-user, no administrator prompt, no driver.
+Two things to install, and **one of them needs administrator rights**:
 
-The model ships inside it. Nothing is downloaded on first run, and there is no "now go and fetch a 16 MB file from Hugging Face" step.
-
-You also need a **virtual audio cable** — the thing that lets other apps hear the cleaned microphone. NoiseGate explains this on first run and offers to open the download page. [VB-Cable](https://vb-audio.com/Cable/) is free and takes about two minutes.
+1. **NoiseGate.** [Download the installer](https://github.com/svaningelgem/noisegate/releases) and run it. It installs into your own user profile, so Windows raises no prompt, and it adds no driver and no service. The model ships inside it — nothing is fetched on first run.
+2. **A virtual audio cable**, which is what lets other apps hear the cleaned microphone. [VB-Cable](https://vb-audio.com/Cable/) is free and takes about two minutes. It installs a sound device system-wide, so **Windows will ask for administrator permission** for this one. NoiseGate detects that it is missing on first run and offers to open the download page.
 
 Then, in Zoom, Teams, Discord, OBS or your browser: **pick `CABLE Output` as your microphone.** That's it.
+
+If you would rather not install a driver at all, NoiseGate still works offline on files — see [Try it without touching your audio setup](#try-it-without-touching-your-audio-setup).
 
 <details>
 <summary><b>Build from source instead</b></summary>

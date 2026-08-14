@@ -38,7 +38,9 @@ const CABLE_TEXT: &str = "NoiseGate cleans up your microphone, but it needs one 
 free program to pass the cleaned sound on to Zoom, Teams, Discord and so on.\n\n\
 That program is called VB-Cable. It acts like a second microphone that other \
 apps can listen to. Without it, NoiseGate has nowhere to send your voice.\n\n\
-It takes about two minutes to install and it's free.\n\n\
+It takes about two minutes to install and it's free. Windows will ask for \
+administrator permission while it installs, which is normal for anything that \
+adds a microphone to your system. NoiseGate itself never asks for that.\n\n\
     Yes  —  open the VB-Cable download page\n\
     No   —  close NoiseGate for now\n\n\
 (Choosing No also stops NoiseGate starting with Windows, so you won't see \
@@ -113,6 +115,18 @@ mod tests {
                 "'{jargon}' means nothing here"
             );
         }
+    }
+
+    /// NoiseGate installs per-user and never asks for administrator rights,
+    /// so someone who got this far has not seen a UAC prompt. VB-Cable is an
+    /// audio driver and will raise one. Warn, rather than let it arrive as a
+    /// surprise from a link this app just opened.
+    #[test]
+    fn the_cable_dialog_warns_that_windows_will_ask_for_permission() {
+        assert!(
+            CABLE_TEXT.contains("administrator"),
+            "installing the cable needs admin rights; say so before opening the page"
+        );
     }
 
     /// The text promises that "No" also turns off start-with-Windows. If that
