@@ -31,6 +31,7 @@ mod pipeline;
 #[cfg(windows)]
 mod tray;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -176,6 +177,16 @@ fn main() -> Result<()> {
     }
 }
 
+/// Which model offline `--denoise` should load.
+///
+/// The flag wins; otherwise whatever the tray would run. Returning `None` when
+/// no flag was given sent offline runs to RNNoise while the app itself used
+/// DeepFilterNet3 — so `--denoise`, the mode people use to check what the app
+/// does, reported a different backend's numbers.
+fn offline_model(flag: Option<&str>, configured: Option<PathBuf>) -> Option<PathBuf> {
+    flag.map(PathBuf::from).or(configured)
+}
+
 #[cfg(windows)]
 fn real_main(has_console: bool) -> Result<()> {
     let args = parse_args();
@@ -194,12 +205,19 @@ fn real_main(has_console: bool) -> Result<()> {
 
     init_tracing();
 
-    let model = args.model.as_deref().map(std::path::Path::new);
     if let Some((input, output)) = &args.denoise {
+        let model = offline_model(
+            args.model.as_deref(),
+            config::Config::load_or_default().active_model(),
+        );
+        match &model {
+            Some(m) => info!(model = %m.display(), "denoising with"),
+            None => info!("no model found; using the built-in RNNoise"),
+        }
         return offline::denoise_file(
             std::path::Path::new(input),
             std::path::Path::new(output),
-            model,
+            model.as_deref(),
             args.atten.unwrap_or(0.0),
         );
     }
@@ -304,7 +322,7 @@ struct CliArgs {
     record: Option<(f32, String)>,
     /// `--denoise <IN.wav> <OUT.wav>`
     denoise: Option<(String, String)>,
-    /// `--model <FILE.onnx>` — overrides config for the offline tools.
+    /// `--model <FILE>` — overrides config for the offline tools.
     model: Option<String>,
     /// `--atten <DB>` — attenuation limit for models that support one.
     atten: Option<f32>,
@@ -366,7 +384,7 @@ const HELP: &str = "NoiseGate — real-time mic noise cancellation\n\
                                     a USB mic instead.\n\
              --record <SECS> <WAV>  Record from the chosen mic straight to a WAV file.\n\
              --denoise <IN> <OUT>   Clean up an existing mono 48 kHz WAV file.\n\
-             --model <FILE.onnx>    Use this ONNX model for --denoise.\n\
+             --model <FILE>         Use this model for --denoise.\n\
              --atten <DB>           Attenuation limit for models that support one.\n\
              -h, --help             Show this help.\n\
          \n\
@@ -562,6 +580,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
+    }
+
+    // `--denoise` used to pass `None` when there was no --model flag, which
+    // sent it to RNNoise while the tray ran DeepFilterNet3. The numbers it
+    // printed were therefore not the app's, and the README quoted them.
+    #[test]
+    fn denoise_falls_back_to_the_configured_model() {
+        let configured = Some(std::path::PathBuf::from("beside-the-exe.tar.gz"));
+
+        assert_eq!(
+            offline_model(None, configured.clone()),
+            configured,
+            "without --model, offline denoising must use the same model as the tray"
+        );
+    }
+
+    #[test]
+    fn an_explicit_model_flag_wins_over_the_config() {
+        assert_eq!(
+            offline_model(Some("chosen.onnx"), Some("configured.tar.gz".into())),
+            Some(std::path::PathBuf::from("chosen.onnx"))
+        );
+    }
+
+    #[test]
+    fn no_flag_and_no_config_means_the_built_in_fallback() {
+        assert_eq!(offline_model(None, None), None);
     }
 
     #[test]
