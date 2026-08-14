@@ -18,8 +18,8 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **68%**, which is just under
-the level already reached (70.0%). A pull request may raise that number; it must
+CI enforces a **minimum** line coverage, currently **68%**, just under the
+70.2% actually reached. A pull request may raise that number; it must
 never lower it. When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
 PR — a tag must never publish something a pull request would have failed.
@@ -29,25 +29,32 @@ PR — a tag must never publish something a pull request would have failed.
 | area | covered | why |
 |---|---|---|
 | `rnnoise.rs` | 100% | pure DSP |
-| `log_format.rs` | 95% | the formatter runs against a buffer instead of a terminal |
-| `dsp/dfn_frontend.rs` | 94% | pure DSP, checked against the reference implementation |
+| `log_format.rs` | 96% | the formatter runs against a buffer instead of a terminal |
 | `devices.rs` | 94% | pure logic — device matching, priority, cable detection |
-| `autostart.rs` | 94% | round-trips through a real registry key |
-| `config.rs` | 91% | load/save take a path, so tests never touch `%APPDATA%` |
-| `pipeline.rs` | 85% | driven through a fake audio backend, including device selection |
-| `dsp/lib.rs` | 85% | backend selection |
+| `dsp/dfn_frontend.rs` | 92% | pure DSP, checked against `df.enhance.df_features()` |
+| `event.rs` | 91% | the RAII handle wrapper, round-tripped |
+| `config.rs` | 90% | load/save take a path, so tests never touch `%APPDATA%` |
+| `pipeline.rs` | 83% | driven through a fake audio backend, including device selection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
 | `offline.rs` | 81% | `--denoise` runs end to end on a generated WAV |
 | `banner.rs` | 81% | the art has to fit 80 columns |
-| `format.rs` | 80% | mix-format validation is pure |
-| `dsp/onnx.rs` | 76% | runs a real session against `testdata/streaming_contract.onnx` |
+| `dsp/lib.rs` | 78% | backend selection |
 | `mmcss.rs` | 77% | asks the OS scheduler for Pro Audio priority |
 | `firstrun.rs` | 75% | the dialog *text* is testable; the message box is not |
-| `wasapi_capture.rs` | 65% | the pump runs against a scripted engine; only the COM setup is left |
-| `wasapi_render.rs` | 64% | same |
-| `tray.rs` | 47% | the watchdog, menu labels and icons; the event loop is not |
-| `main.rs` | 44% | argument parsing and the single-instance lock; `real_main` is not |
+| `dsp/onnx.rs` | 75% | runs a real session against `testdata/streaming_contract.onnx` |
+| `format.rs` | 69% | mix-format validation is pure; the rejection paths are thin |
+| `autostart.rs` | 68% | round-trips a scratch registry key, never the real one |
+| `wasapi_capture.rs` | 67% | the pump runs against a scripted engine; only the COM setup is left |
+| `wasapi_render.rs` | 66% | same |
+| `tray.rs` | 52% | the watchdog, menu labels and icons; the event loop is not |
+| `main.rs` | 48% | argument parsing and the single-instance lock; `real_main` is not |
 | `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
+| **`dsp/tract.rs`** | **0%** | **the shipping backend, and none of it is tested — see below** |
+
+`tract.rs` is the gap that matters. It is what the app actually runs, and every
+line of it is uncovered: constructing it needs the real 8 MB model, which makes
+it an integration test rather than a unit one. `models/dfn3_ours.tar.gz` is in
+the repo, so nothing blocks writing it except the work.
 
 ## The ONNX tests
 
@@ -126,12 +133,12 @@ job is talking to Windows. Reaching 100% needs one of:
 2. **Loopback tests on a machine with a virtual cable** — CI runners have no
    audio devices at all, so these could only run locally or on a self-hosted
    runner.
-3. **A checked-in ONNX model** — would cover `dsp/onnx.rs`. Redistributing the
-   DeepFilterNet weights is not ours to do, which is why we are training our
-   own; once those land in the repo this stops being a blocker.
+3. **Exercising the real model.** `dsp/tract.rs` needs
+   `models/dfn3_ours.tar.gz`, which is in the repo — this one is only waiting
+   on someone writing it.
 
-Until one of those lands, the honest target is "everything that can be tested
-without hardware is tested", and the ratchet is how that gets enforced.
+The honest target is "everything that can be tested without hardware is
+tested", and the ratchet is how that gets enforced.
 
 ## What is deliberately covered
 
@@ -153,8 +160,12 @@ that would fail silently:
 
 ## Fixtures
 
-`samples/` (gitignored) holds real recordings used to compare denoiser
-backends, with a README describing provenance and the commands to regenerate
-the processed versions. They are not part of the automated suite — they contain
-real voices and are several MB each — but they are how any DSP change gets
-judged.
+`samples/demo_*` is committed: a 60-second mixture built from LibriSpeech and
+DEMAND by `scripts/make_demo_sample.py`, byte-identical on any machine, plus
+the MP3s and videos the README shows. `scripts/analyse_demo.py` measures it.
+That is how a DSP change gets judged, and anyone can reproduce it.
+
+Everything else in `samples/` is gitignored — real recordings of real people,
+several MB each. Useful locally, never committed.
+
+None of it runs in the automated suite: the sources are a 1.3 GB download.

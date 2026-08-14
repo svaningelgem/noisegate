@@ -183,7 +183,14 @@ fn main() -> Result<()> {
 /// no flag was given sent offline runs to RNNoise while the app itself used
 /// DeepFilterNet3 — so `--denoise`, the mode people use to check what the app
 /// does, reported a different backend's numbers.
-fn offline_model(flag: Option<&str>, configured: Option<PathBuf>) -> Option<PathBuf> {
+fn offline_model(
+    flag: Option<&str>,
+    configured: Option<PathBuf>,
+    force_rnnoise: bool,
+) -> Option<PathBuf> {
+    if force_rnnoise {
+        return None;
+    }
     flag.map(PathBuf::from).or(configured)
 }
 
@@ -209,10 +216,12 @@ fn real_main(has_console: bool) -> Result<()> {
         let model = offline_model(
             args.model.as_deref(),
             config::Config::load_or_default().active_model(),
+            args.rnnoise,
         );
-        match &model {
-            Some(m) => info!(model = %m.display(), "denoising with"),
-            None => info!("no model found; using the built-in RNNoise"),
+        match (&model, args.rnnoise) {
+            (Some(m), _) => info!(model = %m.display(), "denoising with"),
+            (None, true) => info!("using the built-in RNNoise, as asked"),
+            (None, false) => info!("no model found; using the built-in RNNoise"),
         }
         return offline::denoise_file(
             std::path::Path::new(input),
@@ -324,6 +333,9 @@ struct CliArgs {
     denoise: Option<(String, String)>,
     /// `--model <FILE>` — overrides config for the offline tools.
     model: Option<String>,
+    /// `--rnnoise` — ignore any model and use the built-in backend, which is
+    /// how the comparison in the README is produced.
+    rnnoise: bool,
     /// `--atten <DB>` — attenuation limit for models that support one.
     atten: Option<f32>,
 }
@@ -348,6 +360,7 @@ where
                 out.mic = Some(other["--mic=".len()..].to_string());
             }
             "--model" => out.model = args.next(),
+            "--rnnoise" => out.rnnoise = true,
             "--atten" => out.atten = args.next().and_then(|v| v.parse().ok()),
             "--record" => {
                 if let (Some(secs), Some(path)) = (args.next(), args.next()) {
@@ -585,12 +598,26 @@ mod tests {
     // `--denoise` used to pass `None` when there was no --model flag, which
     // sent it to RNNoise while the tray ran DeepFilterNet3. The numbers it
     // printed were therefore not the app's, and the README quoted them.
+    // The README compares DeepFilterNet3 against RNNoise on the demo sample.
+    // Since --denoise defaults to the configured model, producing the RNNoise
+    // side of that comparison needs a way to say so, or the published table
+    // is one a reader cannot reproduce.
+    #[test]
+    fn rnnoise_can_be_forced_for_comparison() {
+        assert_eq!(
+            offline_model(None, Some("configured.tar.gz".into()), true),
+            None,
+            "--rnnoise has to reach the built-in backend even when a model is configured"
+        );
+        assert!(parse_args_from(["--rnnoise"]).rnnoise);
+    }
+
     #[test]
     fn denoise_falls_back_to_the_configured_model() {
         let configured = Some(std::path::PathBuf::from("beside-the-exe.tar.gz"));
 
         assert_eq!(
-            offline_model(None, configured.clone()),
+            offline_model(None, configured.clone(), false),
             configured,
             "without --model, offline denoising must use the same model as the tray"
         );
@@ -599,14 +626,14 @@ mod tests {
     #[test]
     fn an_explicit_model_flag_wins_over_the_config() {
         assert_eq!(
-            offline_model(Some("chosen.onnx"), Some("configured.tar.gz".into())),
+            offline_model(Some("chosen.onnx"), Some("configured.tar.gz".into()), false),
             Some(std::path::PathBuf::from("chosen.onnx"))
         );
     }
 
     #[test]
     fn no_flag_and_no_config_means_the_built_in_fallback() {
-        assert_eq!(offline_model(None, None), None);
+        assert_eq!(offline_model(None, None, false), None);
     }
 
     #[test]

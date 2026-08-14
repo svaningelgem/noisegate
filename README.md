@@ -150,6 +150,7 @@ Every number here comes from one 60-second sample, and nothing about it is priva
 ```bash
 uv run scripts/make_demo_sample.py     # LibriSpeech + DEMAND, ~1.3 GB once
 noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
+noisegate --denoise samples/demo_raw.wav samples/demo_rnnoise.wav --rnnoise
 uv run scripts/analyse_demo.py         # the table and the spectrogram
 uv run scripts/make_demo_video.py      # the two videos (needs ffmpeg)
 ```

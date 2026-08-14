@@ -48,8 +48,10 @@ def main():
     widths_i = [int(x) for x in widths]
     alpha = get_norm_alpha(False)
 
-    audio = rd(sys.argv[1] if len(sys.argv) > 1 else "/mnt/e/noisegate/samples/kid_raw.wav")
-    ref = rd("/mnt/e/noisegate/samples/kid_dfn.wav")
+    if len(sys.argv) < 3:
+        sys.exit(f"usage: {sys.argv[0]} <noisy.wav> <reference.wav>")
+    audio = rd(sys.argv[1])
+    ref = rd(sys.argv[2])
     spec = state.analysis(audio.reshape(1, -1))
     T = spec.shape[1]
 

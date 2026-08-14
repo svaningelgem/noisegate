@@ -4,13 +4,18 @@ Notes for rebuilding the DeepFilterNet training and reference environment
 without rediscovering the workarounds. Everything here was learned the hard
 way; the non-obvious bits are called out.
 
-## Why we train our own
+## Status: NoiseGate does not use a model trained here
 
-Not quality — the DeepFilterNet3 checkpoint is good, and NoiseGate's ONNX
-loader has been verified to reproduce the reference implementation almost
-exactly. The reasons are **ownership** and **availability**: the only export
-matching our loader came from a third-party repository that could disappear,
-and the licence covering the published weights is unstated.
+It ships DeepFilterNet3's published weights, which its MIT/Apache-2.0 licence
+permits us to redistribute, exported by `scripts/export_dfn3.py` from the
+published checkpoint. That removed the reason this document originally
+existed — the fear was that we had no right to ship anything, and we do. See
+[`model-pipeline.md`](model-pipeline.md).
+
+Two training runs were attempted anyway, to try to beat DFN3 at competing
+speech specifically. Both produced models that suppress rather than separate;
+neither is used. What follows is the environment, the dataset choices and the
+failure analysis, for anyone who wants to try again.
 
 ## Environment
 
@@ -118,11 +123,11 @@ archive has the same name.
 The point of training our own model is not to reproduce DeepFilterNet3 but to
 be *deliberately* good at what it is accidentally good at.
 
-Measured on real recordings, DFN3 removes ~19 dB of background speech where
-newer and larger models remove ~5 dB, because speech-enhancement models are
-trained to *preserve* speech and a neighbour is speech. DFN3 appears to
-discriminate on proximity and reverberation instead. Training on
-speech-plus-noise alone would very likely lose that property.
+On a competing voice DFN3 gains 3.6 dB of SNR where RNNoise gains none at all,
+because speech-enhancement models are trained to *preserve* speech and a
+neighbour is speech. DFN3 appears to discriminate on proximity and
+reverberation instead. Training on speech-plus-noise alone would very likely
+lose that property.
 
 So interfering speech is a first-class noise class:
 
@@ -160,14 +165,23 @@ and build interference yourself.
 
 ## Judging the result
 
-Use the project's percentile measure (`noisegate --denoise`), against the
-fixtures in `samples/`: p25–p75 for background, p95 for the near voice, with
-`samples/kid_dfn.wav` as the bar.
+Build the reproducible sample and measure SNR improvement *while the speaker is
+talking*:
 
-Be careful with it. **The measure rewards a model that simply outputs less** —
-a p25 of −50 dB is near-silence in the quiet parts, which looks like a triumph
-and may not be one. Pair it with listening and a speech-quality metric before
-concluding anything.
+```bash
+uv run scripts/make_demo_sample.py
+noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav --model <candidate>
+uv run scripts/analyse_demo.py
+```
+
+**Do not judge on how quiet the gaps get.** Level percentiles over a whole file
+reward a model that simply outputs less: a model that mutes between sentences
+scores beautifully and is useless. That is precisely how the two runs below
+were read as successes before anyone listened to them. Measuring against the
+clean reference while the voice is present cannot be gamed that way, because
+the near voice has to survive for the error to fall.
+
+Pair it with listening regardless.
 
 ## Run 1: what went wrong
 
@@ -186,10 +200,9 @@ DFN3 removes 0.1, and **33.9 dB** on `chat`. Meanwhile the noise floor dropped
 model that learned to **suppress rather than separate** — and it is exactly
 what the warning above describes, so the warning earned its place.
 
-The suspect is `p_reverb = 0.2`. Push dereverberation hard enough and the model
-treats the near voice's *own* room reflections as noise, taking the brightness
-with them. Run 2 sets it back to DFN3's 0.1 and changes nothing else that
-affects the maths, so the comparison is single-variable against epoch 29.
+The suspect was `p_reverb = 0.2`. Push dereverberation hard enough and the
+model treats the near voice's *own* room reflections as noise, taking the
+brightness with them.
 
 **Do not bundle speed work into an experiment run.** Raising `batch_size` from
 64 to 96 is the obvious win — the bottleneck is sequential GRU steps, so bigger
@@ -198,3 +211,24 @@ schedule, and a better result would no longer be attributable to `p_reverb`.
 `early_stopping_patience` is safe to change (12 → 8; run 1 spent 11 epochs
 after its best proving it was finished), as are `jit` and `torch.compile`,
 which do not change the arithmetic.
+
+## Run 2: same failure, so the suspect was wrong
+
+Run 2 set `p_reverb` back to DFN3's 0.1 and changed nothing else affecting the
+arithmetic, making it single-variable against run 1's epoch 29. It
+over-suppressed in the same way. Whatever costs these runs the near voice's
+brightness, it is not `p_reverb` alone.
+
+Three differences from the official DFN3 recipe are still unexplored, and all
+three are in the schedule rather than the data:
+
+| | DFN3 | both runs |
+|---|---|---|
+| `batch_size_scheduling` | `0/16,2/24,5/32,10/64,20/128,40/256` | empty |
+| epochs | 120 | 60 |
+| `early_stopping_patience` | 25 | 8–12 |
+
+A run without batch-size scheduling sees a very different effective learning
+rate over its life, and 60 epochs with patience 8 stops a long way short of
+where DFN3 was still improving. Start there before touching the data.
+
