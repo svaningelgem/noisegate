@@ -1,0 +1,22 @@
+The samples/demo_* files are built by scripts/make_demo_sample.py and
+redistributed under CC BY-SA 3.0. They are NOT covered by this
+project's MIT/Apache-2.0 licence.
+
+Sources:
+
+  LibriSpeech test-clean - CC BY 4.0
+    https://www.openslr.org/12/
+    Panayotov et al., 'Librispeech: an ASR corpus based on public
+    domain audio books', ICASSP 2015.
+
+  DEMAND (OOFFICE, PCAFETER, STRAFFIC) - see note below
+    https://zenodo.org/records/1227121
+    Thiemann, Ito, Vincent, 'The Diverse Environments Multi-channel
+    Acoustic Noise Database', Proc. Meetings on Acoustics, 2013.
+
+The DEMAND licence is stated inconsistently: the Zenodo record says
+CC BY 4.0, the paper says CC BY-SA 3.0. If you publish a mixture that
+includes it, the safe reading is share-alike.
+
+The 'neighbour through wall' segment is a second LibriSpeech speaker
+low-passed and reverberated by this script, not a recording of anyone.

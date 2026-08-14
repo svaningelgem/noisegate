@@ -35,7 +35,54 @@ The newest and largest model came **last**. It is excellent at enhancing speech,
 
 DeepFilterNet3 is the outlier: it discriminates on proximity and reverberation, which is exactly the cue that separates *you* from *the room*. So that is what NoiseGate ships, tuned for surrounding conversation rather than hiss.
 
-You can reproduce the whole table yourself — `noisegate --denoise noisy.wav clean.wav` prints those numbers.
+### Hear it
+
+Twenty seconds, everything at once: ventilation, cafeteria babble, street traffic and a neighbour through the wall, all at the same time. You hear the raw microphone first, then the same twenty seconds cleaned. **Orange is whichever one you are hearing**, so you can watch the difference at the moment it happens.
+
+https://github.com/user-attachments/assets/40c809fc-33a0-4098-a334-eb2d9c3184c0
+
+> **Unmute it.** GitHub always starts videos muted, and a silent noise-cancellation demo proves very little.
+
+**[The full two-minute tour](https://github.com/user-attachments/assets/4c229f14-d712-4d34-ba94-69c7313be1ff)** walks all six environments one at a time. Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned.mp3)** · **[RNNoise, for comparison](samples/demo_rnnoise.mp3)**. Both clips are in [`samples/`](samples/) too, and rebuild from the scripts below.
+
+### And rebuild it
+
+That first recording has my family in it, so it stays on my disk. None of this does — it is assembled from openly licensed audio by scripts in this repo, and you can build byte-identical copies:
+
+```bash
+uv run scripts/make_demo_sample.py     # LibriSpeech + DEMAND, ~1.3 GB once
+noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
+uv run scripts/analyse_demo.py         # the table below, and the spectrogram
+uv run scripts/make_demo_video.py      # the videos above (needs ffmpeg)
+```
+
+One voice throughout, six ten-second segments, a different problem in each:
+
+![spectrogram of the demo, before and after](docs/demo-spectrogram.png)
+
+| segment | DeepFilterNet3 | RNNoise |
+|---|---|---|
+| office ventilation | +2.6 dB | **+7.4 dB** |
+| cafeteria babble | **+8.0 dB** | +4.5 dB |
+| street traffic | **+10.2 dB** | +7.5 dB |
+| **neighbour through wall** | **+3.6 dB** | **−0.0 dB** |
+| everything at once | **+9.6 dB** | +6.8 dB |
+
+Signal-to-noise improvement measured **while the person is speaking** — the only moment that is hard, because you cannot solve it by muting.
+
+Read the last row first: against a competing voice **RNNoise achieves nothing at all**, and it is not a broken build — it is a 2017 model trained on noise, doing exactly what it was designed to do. Read the first row second: for plain ventilation hum RNNoise is *nearly three times better* than the model we ship, at 1/50th the CPU. Both facts are in the box.
+
+<details>
+<summary><b>Why not just measure the quiet bits between sentences?</b></summary>
+
+Because it flatters whichever model gates hardest. That was the first version of this measurement, and by it RNNoise beat DeepFilterNet3 on every single row — including the neighbour, where it does nothing. Scoring the pauses rewards silence, and silence is free.
+
+The neighbour is only a problem while *you* are talking, so that is when it is measured. This mixture is synthetic precisely so that is possible: `demo_clean_reference.wav` is the near voice alone, which makes the error signal exactly the part that should not be there.
+
+The same trap, in its more expensive form, is in [`docs/training.md`](docs/training.md) — it is how two overnight training runs were scored as successes before anyone listened to them.
+</details>
+
+Caveat on the sample: LibriSpeech is 16 kHz, so nothing above 8 kHz is real. DEMAND has no airshow, so "traffic" and "cafeteria" stand in for the outdoor and crowd cases; inventing a synthetic aeroplane would have proved nothing.
 
 ---
 
@@ -209,6 +256,8 @@ Tests are written **test-first**: write it, watch it fail for the right reason, 
 Code: **MIT or Apache-2.0**, your choice.
 
 The bundled DeepFilterNet3 weights are MIT/Apache-2.0 — redistributable, commercial use included. RNNoise is BSD. There is nothing here you cannot ship.
+
+The demo audio in `samples/demo_*.mp3` is **not** MIT. It is built from [LibriSpeech](https://www.openslr.org/12/) (CC BY 4.0) and [DEMAND](https://zenodo.org/records/1227121), and is redistributed here under **CC BY-SA 3.0** — full attribution in [`samples/demo_ATTRIBUTION.txt`](samples/demo_ATTRIBUTION.txt). DEMAND's licence is stated inconsistently by its own sources (Zenodo says CC BY 4.0, the paper says CC BY-SA 3.0), so the share-alike reading is the one applied.
 
 ## Issues & discussion
 
