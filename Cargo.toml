@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -16,9 +16,9 @@ authors = [
     "Steven Van Ingelgem <steven@vaningelgem.be>",
 ]
 description = "Real-time microphone noise cancellation for Windows. DeepFilterNet3 inference in pure Rust, WASAPI low-latency capture/render, routes cleaned audio into VB-Cable for Zoom/Teams/Discord/OBS."
-repository = "https://github.com/svaningelgem/noisegate"
-homepage = "https://github.com/svaningelgem/noisegate"
-documentation = "https://github.com/svaningelgem/noisegate#readme"
+repository = "https://github.com/svaningelgem/roommute"
+homepage = "https://github.com/svaningelgem/roommute"
+documentation = "https://github.com/svaningelgem/roommute#readme"
 readme = "README.md"
 keywords = ["audio", "noise-cancellation", "wasapi", "deepfilternet", "windows"]
 categories = ["multimedia::audio", "os::windows-apis"]

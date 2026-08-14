@@ -58,7 +58,7 @@ impl WasapiCapture {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
         let thread = std::thread::Builder::new()
-            .name("noisegate-capture".into())
+            .name("roommute-capture".into())
             .spawn(move || {
                 let res = capture_loop(&device_id, &mut *sink, &stop_thread, &ready_tx);
                 if let Err(e) = res {

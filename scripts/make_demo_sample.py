@@ -20,7 +20,7 @@ Produces a 60-second tour, one voice throughout, in six ten-second segments:
     0:50  everything at once
 
 The last two are the point. Anything removes a fan; the neighbour is what
-NoiseGate exists for, and it is deliberately built the way the problem actually
+RoomMute exists for, and it is deliberately built the way the problem actually
 occurs: a real speaker, low-passed and reverberated as a wall would, sitting
 well below the near voice.
 
@@ -288,7 +288,7 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"wrote {OUT / 'demo_ATTRIBUTION.txt'}")
-    print(f"\n  noisegate --denoise {noisy} demo_cleaned.wav")
+    print(f"\n  roommute --denoise {noisy} demo_cleaned.wav")
 
 
 if __name__ == "__main__":

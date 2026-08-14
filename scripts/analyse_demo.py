@@ -13,7 +13,7 @@
 
 Expects scripts/make_demo_sample.py to have run, plus:
 
-    noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
+    roommute --denoise samples/demo_raw.wav samples/demo_cleaned.wav
 
 Prints a per-segment table and writes docs/demo-spectrogram.png.
 

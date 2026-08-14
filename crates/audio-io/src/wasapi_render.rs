@@ -43,7 +43,7 @@ impl WasapiRender {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
         let thread = std::thread::Builder::new()
-            .name("noisegate-render".into())
+            .name("roommute-render".into())
             .spawn(move || {
                 if let Err(e) = render_loop(&device_id, &mut *source, &stop_thread, &ready_tx) {
                     tracing::error!(error = %e, "render loop exited with error");

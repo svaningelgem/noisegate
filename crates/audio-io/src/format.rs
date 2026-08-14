@@ -46,7 +46,7 @@ impl MixFormat {
         }
         if !self.is_float || self.bits_per_sample != 32 {
             return Err(AudioError::UnsupportedFormat(format!(
-                "device mixes {} {}-bit samples; NoiseGate needs 32-bit IEEE float",
+                "device mixes {} {}-bit samples; RoomMute needs 32-bit IEEE float",
                 if self.is_float {
                     "float"
                 } else {

@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn wav_round_trips_through_disk() {
-        let dir = std::env::temp_dir().join(format!("noisegate-wav-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-wav-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("tone.wav");
 
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_sample_rate() {
-        let dir = std::env::temp_dir().join(format!("noisegate-wav-bad-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-wav-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wrong.wav");
 
@@ -324,7 +324,7 @@ mod tests {
     /// have to load, and land at the same amplitude.
     #[test]
     fn float_wavs_load_at_the_same_scale_as_int_ones() {
-        let dir = std::env::temp_dir().join(format!("noisegate-f32-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-f32-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("float.wav");
 
@@ -347,7 +347,7 @@ mod tests {
     /// same length. Runs on the built-in RNNoise so it needs no model file.
     #[test]
     fn denoising_a_file_drops_the_noise_floor_and_keeps_the_length() {
-        let dir = std::env::temp_dir().join(format!("noisegate-denoise-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-denoise-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (input, output) = (dir.join("in.wav"), dir.join("out.wav"));
 
@@ -383,7 +383,7 @@ mod tests {
     /// then writing the whole padded frame would lengthen the file.
     #[test]
     fn a_file_that_is_not_a_whole_number_of_frames_keeps_its_length() {
-        let dir = std::env::temp_dir().join(format!("noisegate-partial-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-partial-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (input, output) = (dir.join("in.wav"), dir.join("out.wav"));
 
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn denoising_a_file_that_is_not_there_says_so() {
-        let missing = std::env::temp_dir().join("noisegate-nope/in.wav");
+        let missing = std::env::temp_dir().join("roommute-nope/in.wav");
         let err = denoise_file(&missing, &missing.with_file_name("out.wav"), None, 0.0)
             .expect_err("must not pretend to succeed");
         assert!(

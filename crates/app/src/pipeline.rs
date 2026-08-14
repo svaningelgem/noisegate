@@ -113,7 +113,7 @@ impl Pipeline {
         // itself, with no real microphone anywhere in the loop.
         if let Some(product) = input.virtual_cable_output() {
             anyhow::bail!(
-                "the selected microphone is {product}'s own output, which is where NoiseGate \
+                "the selected microphone is {product}'s own output, which is where RoomMute \
                  sends audio — routing it back in would loop. Pick a real microphone from the \
                  tray menu"
             );
@@ -166,7 +166,7 @@ impl Pipeline {
 
         // DSP thread: pulls from ring A, processes, pushes to ring B.
         let dsp_thread = std::thread::Builder::new()
-            .name("noisegate-dsp".into())
+            .name("roommute-dsp".into())
             .spawn(move || {
                 #[cfg(windows)]
                 let _mmcss = audio_io::mmcss_pro_audio_for_current_thread();

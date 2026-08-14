@@ -1,5 +1,5 @@
 [package]
-name = "noisegate-dsp"
+name = "roommute-dsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

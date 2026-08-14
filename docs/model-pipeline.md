@@ -3,7 +3,7 @@
 Everything here is reproducible from a clean machine. No step depends on a file
 that exists on only one PC.
 
-## What NoiseGate runs
+## What RoomMute runs
 
 `models/dfn3_ours.tar.gz` — upstream DeepFilterNet3's own three-graph export
 (`enc`, `erb_dec`, `df_dec`) plus its config, loaded by
@@ -35,7 +35,7 @@ There is no carve-out for the checkpoints. Both licences permit redistribution
 provided the licence text and copyright notice travel with it (`LICENSE-MIT`,
 `LICENSE-APACHE`, © 2021 Hendrik Schröter).
 
-So shipping the weights inside NoiseGate is allowed, which is why the app works
+So shipping the weights inside RoomMute is allowed, which is why the app works
 on first run with nothing to download.
 
 One caveat worth stating rather than hiding: weights are shaped by their

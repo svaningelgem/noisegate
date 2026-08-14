@@ -259,7 +259,7 @@ impl Items {
 /// How a capture device should appear in the picker.
 ///
 /// A virtual cable's output side is offered by Windows like any other
-/// microphone, but choosing it would have NoiseGate record from the very
+/// microphone, but choosing it would have RoomMute record from the very
 /// cable it writes to. The pipeline refuses to start in that case; the menu
 /// shouldn't let it get that far. Greyed out with the reason attached beats an
 /// error dialog after the fact.
@@ -336,7 +336,7 @@ fn cpu_percent(frames: u64, total_dsp_ns: u64) -> f64 {
 
 fn tooltip_text(denoiser: &str, enabled: bool, cpu_pct: f64, peak_ms: f64) -> String {
     format!(
-        "NoiseGate ({})\n{}  |  CPU: {:.1}%  peak: {:.1}ms",
+        "RoomMute ({})\n{}  |  CPU: {:.1}%  peak: {:.1}ms",
         denoiser,
         if enabled { "ON" } else { "BYPASS" },
         cpu_pct,
@@ -467,7 +467,7 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
     menu.append(&open_logs).ok();
     menu.append(&PredefinedMenuItem::separator()).ok();
 
-    let quit = MenuItem::new("Quit NoiseGate", true, None);
+    let quit = MenuItem::new("Quit RoomMute", true, None);
     menu.append(&quit).ok();
 
     (
@@ -669,7 +669,7 @@ impl ApplicationHandler<UserEvent> for App {
             .pipeline
             .as_ref()
             .map(initial_tooltip)
-            .unwrap_or_else(|| "NoiseGate — stopped".to_string());
+            .unwrap_or_else(|| "RoomMute — stopped".to_string());
 
         let enabled = self.cfg.read().unwrap().enabled;
         let tray = TrayIconBuilder::new()
@@ -791,7 +791,7 @@ fn explorer_path() -> std::path::PathBuf {
 }
 
 fn initial_tooltip(p: &Pipeline) -> String {
-    format!("NoiseGate ({}) — starting", p.denoiser_name())
+    format!("RoomMute ({}) — starting", p.denoiser_name())
 }
 
 fn tooltip(p: &Pipeline) -> String {
@@ -811,8 +811,8 @@ fn tooltip(p: &Pipeline) -> String {
 /// and whether the watchdog thinks it has gone quiet.
 fn status_text(running: bool, stalled: bool) -> Option<&'static str> {
     match (running, stalled) {
-        (true, true) => Some("NoiseGate — no audio from the microphone"),
-        (false, _) => Some("NoiseGate — stopped (pick a microphone)"),
+        (true, true) => Some("RoomMute — no audio from the microphone"),
+        (false, _) => Some("RoomMute — stopped (pick a microphone)"),
         // Running and healthy: the caller has real statistics to show instead.
         (true, false) => None,
     }
@@ -843,7 +843,7 @@ const BYPASSED: [u8; 4] = [0xd0, 0x6b, 0x18, 0xff];
 /// badge when audio isn't running at all.
 ///
 /// Both states matter because the icon is the only surface this app has. Without
-/// the colour there's no way to tell a bypassed NoiseGate from a working one;
+/// the colour there's no way to tell a bypassed RoomMute from a working one;
 /// without the badge, a *stopped* one looks identical too, and the error dialog
 /// is long gone by the time anyone notices their microphone is dead.
 fn icon_rgba(enabled: bool, warning: bool) -> Vec<u8> {
@@ -936,7 +936,7 @@ mod tests {
         assert!(enabled);
     }
 
-    /// Selecting a cable's output would have NoiseGate record from the cable
+    /// Selecting a cable's output would have RoomMute record from the cable
     /// it writes to. Not selectable, and the menu says why.
     #[test]
     fn a_cables_own_output_cannot_be_chosen_as_the_microphone() {
@@ -1264,7 +1264,7 @@ mod tests {
     /// the user has to configure it again every time they experiment.
     #[test]
     fn switching_away_from_the_model_remembers_where_it_was() {
-        let dir = std::env::temp_dir().join(format!("noisegate-tray-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-tray-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = dir.join("dfn3.onnx");
         std::fs::write(&model, b"stand-in").unwrap();

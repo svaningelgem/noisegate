@@ -50,7 +50,7 @@ struct Cable {
     output: &'static [&'static str],
 }
 
-/// Every product NoiseGate can route through, for error messages.
+/// Every product RoomMute can route through, for error messages.
 pub fn known_cable_products() -> Vec<&'static str> {
     KNOWN_CABLES.iter().map(|c| c.product).collect()
 }

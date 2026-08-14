@@ -86,7 +86,7 @@ and a wall clock; the test would be slow, flaky, and the first one anyone
 disables. The guard is the comment at the re-arm site.
 
 **A fresh `Instant` must never have a `Duration` subtracted from it.** That panics
-when uptime is below the offset, which is exactly when NoiseGate starts, since it
+when uptime is below the offset, which is exactly when RoomMute starts, since it
 runs at login. This cannot be tested by observation: `Instant` is opaque, has no
 constructor, and the panic is only reachable on a machine that has genuinely just
 booted — so a test asserting "the pipeline builds" passes everywhere and never

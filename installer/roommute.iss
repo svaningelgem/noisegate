@@ -1,22 +1,22 @@
-; NoiseGate installer (Inno Setup 6).
+; RoomMute installer (Inno Setup 6).
 ;
 ; Per-user install on purpose: it needs no administrator rights, and it matches
 ; how the app registers start-with-Windows (HKCU\...\Run). A per-machine
 ; install would put the exe somewhere the user can't update and still write
 ; autostart per-user, which is the worst of both.
 ;
-; Build:  ISCC.exe installer\noisegate.iss
+; Build:  ISCC.exe installer\roommute.iss
 ; Expects cargo build --release --features onnx to have run first.
 
-#define AppName        "NoiseGate"
+#define AppName        "RoomMute"
 ; Overridable from the command line so CI can stamp the tag:
-;   ISCC.exe /DAppVersion=1.2.3 installer\noisegate.iss
+;   ISCC.exe /DAppVersion=1.2.3 installer\roommute.iss
 #ifndef AppVersion
-  #define AppVersion   "0.1.0"
+  #define AppVersion   "1.0.0"
 #endif
-#define AppPublisher   "NoiseGate contributors"
-#define AppURL         "https://github.com/svaningelgem/noisegate"
-#define AppExe         "noisegate.exe"
+#define AppPublisher   "RoomMute contributors"
+#define AppURL         "https://github.com/svaningelgem/roommute"
+#define AppExe         "roommute.exe"
 #define SourceDir      "..\target\release"
 
 [Setup]
@@ -32,7 +32,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 UsePreviousPrivileges=no
 OutputDir=..\dist
-OutputBaseFilename=NoiseGate-{#AppVersion}-setup
+OutputBaseFilename=RoomMute-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -62,7 +62,7 @@ Source: "{#SourceDir}\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; DeepFilterNet3, dual MIT/Apache-2.0, so redistributable with attribution —
 ; models\NOTICE.md carries it. Without this the app installs and then quietly
 ; falls back to RNNoise, which does not remove background speech at all: the
-; whole reason NoiseGate exists. The app picks it up automatically from
+; whole reason RoomMute exists. The app picks it up automatically from
 ; alongside the executable.
 ;
 ; This is the export we build ourselves from the published checkpoint with
@@ -104,7 +104,7 @@ Type: filesandordirs; Name: "{userappdata}\{#AppName}\logs"
 // offers to open the download page, so the installer deliberately says nothing
 // about it -- one explanation, in the place where it can actually be acted on.
 
-// Stop a running NoiseGate before overwriting its files.
+// Stop a running RoomMute before overwriting its files.
 //
 // Restart Manager is the usual mechanism, but it works by asking windows to
 // close, and this is a tray app with no window -- there is nothing to send
@@ -121,9 +121,9 @@ procedure StopRunningInstance();
 var
   ResultCode: Integer;
 begin
-  if CheckForMutexes('Local\NoiseGate.SingleInstance') then
+  if CheckForMutexes('Local\RoomMute.SingleInstance') then
     StoppedRunningInstance := True;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM noisegate.exe /F',
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM roommute.exe /F',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   // taskkill returns before the handles are actually released.
   if ResultCode = 0 then
@@ -138,9 +138,9 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   StopRunningInstance();
-  if CheckForMutexes('Local\NoiseGate.SingleInstance') then
-    Result := 'NoiseGate is still running and could not be closed automatically.' + #13#10#13#10 +
-              'Please quit it from the tray icon (right-click, "Quit NoiseGate") and run ' +
+  if CheckForMutexes('Local\RoomMute.SingleInstance') then
+    Result := 'RoomMute is still running and could not be closed automatically.' + #13#10#13#10 +
+              'Please quit it from the tray icon (right-click, "Quit RoomMute") and run ' +
               'this installer again.'
   else
     Result := '';

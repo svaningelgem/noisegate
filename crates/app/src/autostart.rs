@@ -2,7 +2,7 @@
 //!
 //! `HKCU\...\CurrentVersion\Run` rather than the machine-wide `HKLM` one or a
 //! scheduled task: it needs no elevation, it's trivially inspectable by the
-//! user, and uninstalling is deleting one value. NoiseGate holds a microphone
+//! user, and uninstalling is deleting one value. RoomMute holds a microphone
 //! open — it should not be quietly installing itself for every account on the
 //! machine.
 
@@ -18,7 +18,7 @@ use windows::Win32::System::Registry::{
 };
 
 const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
-const VALUE_NAME: PCWSTR = w!("NoiseGate");
+const VALUE_NAME: PCWSTR = w!("RoomMute");
 
 /// The command Windows will run at login. Quoted, because `C:\Program Files\…`
 /// would otherwise be parsed as several arguments.
@@ -61,7 +61,7 @@ fn open_run_key(access: REG_SAM_FLAGS) -> Result<Key> {
     Ok(Key(key))
 }
 
-/// Is NoiseGate currently registered to start at login?
+/// Is RoomMute currently registered to start at login?
 pub fn is_enabled() -> bool {
     is_entry_enabled(VALUE_NAME)
 }
@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn command_is_quoted_for_paths_with_spaces() {
-        let cmd = command_string(Path::new(r"C:\Program Files\NoiseGate\noisegate.exe"));
-        assert_eq!(cmd, "\"C:\\Program Files\\NoiseGate\\noisegate.exe\"");
+        let cmd = command_string(Path::new(r"C:\Program Files\RoomMute\roommute.exe"));
+        assert_eq!(cmd, "\"C:\\Program Files\\RoomMute\\roommute.exe\"");
         assert!(cmd.starts_with('"') && cmd.ends_with('"'));
     }
 
@@ -159,7 +159,7 @@ mod tests {
     /// caller owns. Tests run in parallel, so each needs its own — sharing one
     /// makes them race over the same value.
     fn round_trip(name: PCWSTR) {
-        let exe = Path::new(r"C:\nowhere\noisegate-selftest.exe");
+        let exe = Path::new(r"C:\nowhere\roommute-selftest.exe");
 
         set_entry(name, exe, true).expect("enable");
         assert!(
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn enabling_and_disabling_round_trips() {
-        round_trip(w!("NoiseGate-selftest-roundtrip"));
+        round_trip(w!("RoomMute-selftest-roundtrip"));
     }
 
     /// The round trip used to call `set(true)`, which writes
@@ -196,8 +196,8 @@ mod tests {
     /// seed behind, committing the exact harm it was written to prevent.
     #[test]
     fn writing_one_entry_never_touches_the_apps_own() {
-        let name = w!("NoiseGate-selftest-isolation");
-        let exe = Path::new(r"C:\nowhere\noisegate-selftest.exe");
+        let name = w!("RoomMute-selftest-isolation");
+        let exe = Path::new(r"C:\nowhere\roommute-selftest.exe");
         let before = read_entry(VALUE_NAME);
 
         set_entry(name, exe, true).expect("enable");
@@ -209,7 +209,7 @@ mod tests {
             "writing {:?} also wrote the app's own entry — via `set(true)` that \
              points the user's Run key at whatever binary is running, which under \
              `cargo test` is a temporary file in target/debug/deps",
-            "NoiseGate-selftest-isolation"
+            "RoomMute-selftest-isolation"
         );
     }
 }

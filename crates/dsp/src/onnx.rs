@@ -3,7 +3,7 @@
 //!
 //! Build with `--features onnx`. You'll need the ONNX Runtime DLL
 //! (onnxruntime.dll); we use `load-dynamic` so it doesn't have to ship
-//! inside the binary. Put it **next to noisegate.exe**, or point
+//! inside the binary. Put it **next to roommute.exe**, or point
 //! `ORT_DYLIB_PATH` at it explicitly — see [`pin_dylib_path`] for why we
 //! don't let the OS search for it.
 //!
@@ -56,7 +56,7 @@ pub struct OnnxDenoiser {
 ///
 /// `ort`'s `load-dynamic` otherwise hands the bare filename to the OS loader,
 /// whose search order includes the current working directory. Launch
-/// NoiseGate from Downloads with a hostile `onnxruntime.dll` sitting there and
+/// RoomMute from Downloads with a hostile `onnxruntime.dll` sitting there and
 /// it executes inside a process that holds the microphone open. Naming the
 /// full path removes the search entirely.
 pub(crate) fn pin_dylib_path() {
@@ -255,16 +255,16 @@ mod tests {
     // ---- the dylib guard, which needs neither runtime nor model ----------
 
     /// Naming the full path is what stops the OS loader searching the current
-    /// working directory. Launch NoiseGate from Downloads with a hostile
+    /// working directory. Launch RoomMute from Downloads with a hostile
     /// `onnxruntime.dll` sitting there and a bare filename would execute it
     /// inside a process holding the microphone open.
     #[test]
     fn the_runtime_is_pinned_next_to_our_own_executable() {
-        let pinned = dylib_path_to_pin(false, Some(Path::new(r"C:\Program Files\NoiseGate")))
+        let pinned = dylib_path_to_pin(false, Some(Path::new(r"C:\Program Files\RoomMute")))
             .expect("should pin a path");
         assert_eq!(
             pinned,
-            PathBuf::from(r"C:\Program Files\NoiseGate\onnxruntime.dll")
+            PathBuf::from(r"C:\Program Files\RoomMute\onnxruntime.dll")
         );
         assert!(
             pinned.is_absolute(),
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn an_operators_own_choice_is_not_overridden() {
         assert_eq!(
-            dylib_path_to_pin(true, Some(Path::new(r"C:\NoiseGate"))),
+            dylib_path_to_pin(true, Some(Path::new(r"C:\RoomMute"))),
             None,
             "ORT_DYLIB_PATH was set deliberately; leave it alone"
         );
@@ -443,7 +443,7 @@ mod tests {
             return;
         }
         let junk =
-            std::env::temp_dir().join(format!("noisegate-not-a-model-{}.onnx", std::process::id()));
+            std::env::temp_dir().join(format!("roommute-not-a-model-{}.onnx", std::process::id()));
         std::fs::write(&junk, b"this is not a protobuf").unwrap();
 
         let msg = match OnnxDenoiser::load(&junk) {

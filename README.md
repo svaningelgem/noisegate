@@ -1,4 +1,4 @@
-# NoiseGate
+# RoomMute
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4.svg)](#install)
@@ -8,7 +8,7 @@
 
 ### Your voice goes to the call. The rest of the room doesn't.
 
-Everything removes fans and keyboard clatter. NoiseGate removes **the people talking around you** — the child in the next room, a partner on the phone, the desk behind you — and leaves your own voice untouched.
+Everything removes fans and keyboard clatter. RoomMute removes **the people talking around you** — the child in the next room, a partner on the phone, the desk behind you — and leaves your own voice untouched.
 
 It runs in the tray, uses about 4% of one core, and needs nothing from the internet.
 
@@ -47,19 +47,19 @@ Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned
 
 Two things to install, and **one of them needs administrator rights**:
 
-1. **NoiseGate.** [Download the installer](https://github.com/svaningelgem/noisegate/releases) and run it. It installs into your own user profile, so Windows raises no prompt, and it adds no driver and no service. The model ships inside it — nothing is fetched on first run.
-2. **A virtual audio cable**, which is what lets other apps hear the cleaned microphone. [VB-Cable](https://vb-audio.com/Cable/) is free and takes about two minutes. It installs a sound device system-wide, so **Windows will ask for administrator permission** for this one. NoiseGate detects that it is missing on first run and offers to open the download page.
+1. **RoomMute.** [Download the installer](https://github.com/svaningelgem/roommute/releases) and run it. It installs into your own user profile, so Windows raises no prompt, and it adds no driver and no service. The model ships inside it — nothing is fetched on first run.
+2. **A virtual audio cable**, which is what lets other apps hear the cleaned microphone. [VB-Cable](https://vb-audio.com/Cable/) is free and takes about two minutes. It installs a sound device system-wide, so **Windows will ask for administrator permission** for this one. RoomMute detects that it is missing on first run and offers to open the download page.
 
 Then, in Zoom, Teams, Discord, OBS or your browser: **pick `CABLE Output` as your microphone.** That's it.
 
-If you would rather not install a driver at all, NoiseGate still works offline on files — see [Try it without touching your audio setup](#try-it-without-touching-your-audio-setup).
+If you would rather not install a driver at all, RoomMute still works offline on files — see [Try it without touching your audio setup](#try-it-without-touching-your-audio-setup).
 
 <details>
 <summary><b>Build from source instead</b></summary>
 
 ```powershell
-git clone https://github.com/svaningelgem/noisegate
-cd noisegate
+git clone https://github.com/svaningelgem/roommute
+cd roommute
 cargo build --release
 ```
 
@@ -84,7 +84,7 @@ Right-click for the menu: pick a microphone, switch backend, toggle start-with-W
 
 **Microphones are remembered in preference order.** Click one and it becomes first choice; the rest shift down. Unplug it mid-call and the next one down takes over on its own, rather than the app stopping to ask. Plug it back in and it is picked up again.
 
-A cable's own output is greyed out in the picker, because selecting it would have NoiseGate record from the very cable it writes into.
+A cable's own output is greyed out in the picker, because selecting it would have RoomMute record from the very cable it writes into.
 
 ---
 
@@ -94,10 +94,10 @@ You do not have to install a cable, or route anything, to hear what it does:
 
 ```powershell
 # Record 10 seconds from your microphone
-.\noisegate.exe --record 10 test.wav
+.\roommute.exe --record 10 test.wav
 
 # Clean it up
-.\noisegate.exe --denoise test.wav clean.wav
+.\roommute.exe --denoise test.wav clean.wav
 ```
 
 It prints what it did:
@@ -118,7 +118,7 @@ Useful as a smoke test. Do not read too much into the first number, though: it i
 
 Your microphone audio goes to the DSP thread and into the virtual cable. Nowhere else. This started as a security audit of an audio app, and that property is deliberate — the model is bundled precisely so that first run does not need to fetch anything.
 
-The only things NoiseGate writes are `%APPDATA%\NoiseGate\config.toml` and a log file that rotates at 5 MB. The log records device names, so it is worth a glance before pasting into a bug report.
+The only things RoomMute writes are `%APPDATA%\RoomMute\config.toml` and a log file that rotates at 5 MB. The log records device names, so it is worth a glance before pasting into a bug report.
 
 ---
 
@@ -141,7 +141,7 @@ Two backends, switchable from the tray while running:
 | **DeepFilterNet3** (default) | **+3.6 dB** | **+9.6 dB** | ~4% of one core | nothing — bundled |
 | **RNNoise** | −0.0 dB | +6.8 dB | ~0.3% of one core | nothing — embedded |
 
-RNNoise earns its place: ~50× less compute, no model file at all, and genuinely good at fans and hiss. It simply cannot touch a voice in the next room, because it was trained not to. NoiseGate falls back to it automatically if no model is found, so it always does something useful.
+RNNoise earns its place: ~50× less compute, no model file at all, and genuinely good at fans and hiss. It simply cannot touch a voice in the next room, because it was trained not to. RoomMute falls back to it automatically if no model is found, so it always does something useful.
 
 ## Measuring it, and rebuilding the proof
 
@@ -149,8 +149,8 @@ Every number here comes from one 60-second sample, and nothing about it is priva
 
 ```bash
 uv run scripts/make_demo_sample.py     # LibriSpeech + DEMAND, ~1.3 GB once
-noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
-noisegate --denoise samples/demo_raw.wav samples/demo_rnnoise.wav --rnnoise
+roommute --denoise samples/demo_raw.wav samples/demo_cleaned.wav
+roommute --denoise samples/demo_raw.wav samples/demo_rnnoise.wav --rnnoise
 uv run scripts/analyse_demo.py         # the table and the spectrogram
 uv run scripts/make_demo_video.py      # the two videos (needs ffmpeg)
 ```
@@ -187,7 +187,7 @@ Caveat on the sample: LibriSpeech is 16 kHz, so nothing above 8 kHz is real. DEM
 
 ## Configuration
 
-`%APPDATA%\NoiseGate\config.toml` — created on first run, edited live by the tray menu.
+`%APPDATA%\RoomMute\config.toml` — created on first run, edited live by the tray menu.
 
 ```toml
 microphones = ["Microphone (Yeti)", "Microphone (Webcam)"]  # preference order
@@ -264,5 +264,5 @@ The demo audio in `samples/demo_*.mp3` is **not** MIT. It is built from [LibriSp
 
 ## Issues & discussion
 
-- [Report a bug or request a feature](https://github.com/svaningelgem/noisegate/issues)
-- [Discussions](https://github.com/svaningelgem/noisegate/discussions) for questions and ideas
+- [Report a bug or request a feature](https://github.com/svaningelgem/roommute/issues)
+- [Discussions](https://github.com/svaningelgem/roommute/discussions) for questions and ideas

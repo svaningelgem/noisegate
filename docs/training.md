@@ -4,7 +4,7 @@ Notes for rebuilding the DeepFilterNet training and reference environment
 without rediscovering the workarounds. Everything here was learned the hard
 way; the non-obvious bits are called out.
 
-## Status: NoiseGate does not use a model trained here
+## Status: RoomMute does not use a model trained here
 
 It ships DeepFilterNet3's published weights, which its MIT/Apache-2.0 licence
 permits us to redistribute, exported by `scripts/export_dfn3.py` from the
@@ -170,7 +170,7 @@ talking*:
 
 ```bash
 uv run scripts/make_demo_sample.py
-noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav --model <candidate>
+roommute --denoise samples/demo_raw.wav samples/demo_cleaned.wav --model <candidate>
 uv run scripts/analyse_demo.py
 ```
 

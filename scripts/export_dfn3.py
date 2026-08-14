@@ -11,13 +11,13 @@
 #     "MonkeyType",
 # ]
 # ///
-"""Convert DeepFilterNet3's published weights into the model NoiseGate runs.
+"""Convert DeepFilterNet3's published weights into the model RoomMute runs.
 
     uv run scripts/export_dfn3.py [OUTPUT_DIR]
 
 That is the whole thing. uv installs the dependencies into a throwaway
 environment, the script downloads the official checkpoint, and it writes a
-`DeepFilterNet3_onnx.tar.gz` that `noisegate --model <that file>` loads
+`DeepFilterNet3_onnx.tar.gz` that `roommute --model <that file>` loads
 directly. Nothing needs to be installed first except uv, and nothing is left
 behind on your system.
 
@@ -41,7 +41,7 @@ Three graphs plus a config, tarred together:
     df_dec.onnx    embedding     -> deep-filter coefficients
 
 Upstream splits it this way on purpose: the STFT front-end belongs in the host
-application, not the graph. NoiseGate runs these through DeepFilterNet's own
+application, not the graph. RoomMute runs these through DeepFilterNet's own
 tract runner, which streams them correctly — see docs/model-pipeline.md for
 why running them frame-at-a-time under ONNX Runtime silently destroys ~6 dB of
 the near voice.
@@ -187,7 +187,7 @@ def main() -> None:
     if tar is None:
         raise SystemExit("no *_onnx.tar.gz was produced")
     print(f"model:  {tar}  ({tar.stat().st_size / 1e6:.1f} MB)")
-    print(f"\n  noisegate --denoise in.wav out.wav --model {tar}")
+    print(f"\n  roommute --denoise in.wav out.wav --model {tar}")
 
 
 if __name__ == "__main__":

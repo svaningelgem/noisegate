@@ -176,7 +176,7 @@ pub fn log_dir() -> PathBuf {
 fn base_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("NoiseGate")
+        .join("RoomMute")
 }
 
 #[cfg(test)]
@@ -234,7 +234,7 @@ mod tests {
     /// Everything the tray writes has to come back on the next launch.
     #[test]
     fn settings_survive_a_save_and_reload() {
-        let dir = std::env::temp_dir().join(format!("noisegate-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-cfg-{}", std::process::id()));
         let path = dir.join("nested").join("config.toml");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -265,7 +265,7 @@ mod tests {
     /// place.
     #[test]
     fn a_missing_file_is_defaults_and_a_broken_one_is_an_error() {
-        let missing = std::env::temp_dir().join("noisegate-does-not-exist/config.toml");
+        let missing = std::env::temp_dir().join("roommute-does-not-exist/config.toml");
         let cfg = Config::load_from(&missing).unwrap();
         assert!(cfg.enabled && cfg.use_onnx, "defaults are on");
 
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn the_config_lives_somewhere_named_and_takes_the_logs_with_it() {
         let cfg = config_path();
-        assert!(cfg.ends_with("NoiseGate/config.toml") || cfg.ends_with(r"NoiseGate\config.toml"));
+        assert!(cfg.ends_with("RoomMute/config.toml") || cfg.ends_with(r"RoomMute\config.toml"));
         assert_eq!(
             log_dir().parent(),
             cfg.parent(),
@@ -299,7 +299,7 @@ mod tests {
     /// at all — with a perfectly good model sitting beside the executable.
     #[test]
     fn a_stale_model_path_falls_back_to_the_bundled_model() {
-        let dir = std::env::temp_dir().join(format!("noisegate-stale-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-stale-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let beside = std::env::current_exe()
             .unwrap()
@@ -327,7 +327,7 @@ mod tests {
     /// really there — a stale path must fall back to RNNoise, not fail.
     #[test]
     fn a_model_is_only_offered_when_the_file_exists() {
-        let dir = std::env::temp_dir().join(format!("noisegate-model-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-model-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = dir.join("dfn3.onnx");
         std::fs::write(&model, b"not really a model, but it exists").unwrap();
@@ -352,7 +352,7 @@ mod tests {
     fn an_onnx_model_is_only_active_when_switched_on() {
         // A real file, so this tests the switch and not whether some model
         // happens to be sitting beside the test binary.
-        let dir = std::env::temp_dir().join(format!("noisegate-switch-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-switch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = dir.join("present.onnx");
         std::fs::write(&model, b"stand-in").unwrap();

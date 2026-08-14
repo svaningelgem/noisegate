@@ -1,4 +1,4 @@
-//! Audio I/O for NoiseGate.
+//! Audio I/O for RoomMute.
 //!
 //! Wraps WASAPI capture (microphone) and render (VB-Cable Input) endpoints
 //! with a minimal trait-based API. Windows-only; building on other platforms

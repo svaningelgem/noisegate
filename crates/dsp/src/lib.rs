@@ -1,4 +1,4 @@
-//! DSP layer for NoiseGate.
+//! DSP layer for RoomMute.
 //!
 //! Defines a [`Denoiser`] trait so the pipeline doesn't care which model is
 //! running underneath. The default backend is RNNoise (via `nnnoiseless`)

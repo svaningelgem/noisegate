@@ -1,6 +1,6 @@
 //! Console attachment for a GUI-subsystem binary.
 //!
-//! NoiseGate is built as `windows_subsystem = "windows"` so double-clicking it
+//! RoomMute is built as `windows_subsystem = "windows"` so double-clicking it
 //! goes straight to the tray without a console window hanging around behind
 //! it. The cost is that the CLI modes (`--list-devices`, `--denoise`, …) would
 //! print into the void: a GUI-subsystem process starts with no console and
@@ -29,7 +29,7 @@ use windows::Win32::System::Console::{
 /// redirecting them afterwards is too late.
 pub fn attach_to_parent() -> bool {
     unsafe {
-        // Already redirected — `noisegate --list-devices > out.txt`, or a
+        // Already redirected — `roommute --list-devices > out.txt`, or a
         // pipe. Those handles are valid and are exactly where the user wants
         // the output; pointing them at CONOUT$ would throw the redirection
         // away and print into a console they aren't looking at.
@@ -96,7 +96,7 @@ mod tests {
     /// Under the test harness stdout is a pipe, so it is already usable and
     /// `attach_to_parent` must take the early exit. That branch is the whole
     /// point: it once reopened CONOUT$ unconditionally, which threw away
-    /// `noisegate --list-devices > out.txt` and printed into a console nobody
+    /// `roommute --list-devices > out.txt` and printed into a console nobody
     /// was looking at.
     #[test]
     fn an_already_redirected_stdout_is_left_alone() {

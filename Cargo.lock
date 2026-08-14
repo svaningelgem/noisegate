@@ -1612,55 +1612,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "noisegate"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs 5.0.1",
- "hound",
- "muda",
- "noisegate-audio-io",
- "noisegate-dsp",
- "ringbuf",
- "serde",
- "toml",
- "tracing",
- "tracing-subscriber",
- "tray-icon",
- "windows",
- "winit",
-]
-
-[[package]]
-name = "noisegate-audio-io"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "thiserror 1.0.69",
- "tracing",
- "windows",
- "windows-core",
-]
-
-[[package]]
-name = "noisegate-dsp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "deep_filter",
- "ndarray 0.15.6",
- "nnnoiseless",
- "ort",
- "realfft",
- "thiserror 1.0.69",
- "tracing",
- "tract-core",
- "tract-hir",
- "tract-onnx",
- "tract-pulse",
-]
-
-[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2507,6 +2458,55 @@ dependencies = [
  "crossbeam-utils",
  "portable-atomic",
  "portable-atomic-util",
+]
+
+[[package]]
+name = "roommute"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "dirs 5.0.1",
+ "hound",
+ "muda",
+ "ringbuf",
+ "roommute-audio-io",
+ "roommute-dsp",
+ "serde",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+ "windows",
+ "winit",
+]
+
+[[package]]
+name = "roommute-audio-io"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "thiserror 1.0.69",
+ "tracing",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
+name = "roommute-dsp"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "deep_filter",
+ "ndarray 0.15.6",
+ "nnnoiseless",
+ "ort",
+ "realfft",
+ "thiserror 1.0.69",
+ "tracing",
+ "tract-core",
+ "tract-hir",
+ "tract-onnx",
+ "tract-pulse",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! First-run conversations: the two things NoiseGate can't do for the user.
+//! First-run conversations: the two things RoomMute can't do for the user.
 //!
 //! Both are deliberately plain-language. Someone installing a noise-cancelling
 //! app has no reason to know what a virtual audio endpoint is, and telling
@@ -34,16 +34,16 @@ pub fn cable_missing() -> CableChoice {
     }
 }
 
-const CABLE_TEXT: &str = "NoiseGate cleans up your microphone, but it needs one more \
+const CABLE_TEXT: &str = "RoomMute cleans up your microphone, but it needs one more \
 free program to pass the cleaned sound on to Zoom, Teams, Discord and so on.\n\n\
 That program is called VB-Cable. It acts like a second microphone that other \
-apps can listen to. Without it, NoiseGate has nowhere to send your voice.\n\n\
+apps can listen to. Without it, RoomMute has nowhere to send your voice.\n\n\
 It takes about two minutes to install and it's free. Windows will ask for \
 administrator permission while it installs, which is normal for anything that \
-adds a microphone to your system. NoiseGate itself never asks for that.\n\n\
+adds a microphone to your system. RoomMute itself never asks for that.\n\n\
     Yes  —  open the VB-Cable download page\n\
-    No   —  close NoiseGate for now\n\n\
-(Choosing No also stops NoiseGate starting with Windows, so you won't see \
+    No   —  close RoomMute for now\n\n\
+(Choosing No also stops RoomMute starting with Windows, so you won't see \
 this message every time you switch on your PC.)";
 
 /// Ask before using the high-quality model, naming where it comes from.
@@ -61,7 +61,7 @@ fn licence_text() -> String {
     format!(
         "The high-quality noise removal uses DeepFilterNet3, a speech model \
 published by its authors at:\n\n    {MODEL_SOURCE_URL}\n\n\
-It is a separate work from NoiseGate, by Hendrik Schröter and contributors, \
+It is a separate work from RoomMute, by Hendrik Schröter and contributors, \
 and is included under its MIT / Apache-2.0 licence — see NOTICE.md next to the \
 program. Nothing is downloaded.\n\n\
     Yes  —  use it (recommended)\n\
@@ -81,7 +81,7 @@ fn missing_text(expected: &std::path::Path) -> String {
         "The high-quality model isn't installed yet.\n\n\
          Download the DeepFilterNet3 ONNX export from:\n\n    {}\n\n\
          and save it as:\n\n    {}\n\n\
-         NoiseGate will use it the next time you pick it from the Denoiser menu. \
+         RoomMute will use it the next time you pick it from the Denoiser menu. \
          Until then it stays on the built-in noise removal.",
         MODEL_SOURCE_URL,
         expected.display()
@@ -117,7 +117,7 @@ mod tests {
         }
     }
 
-    /// NoiseGate installs per-user and never asks for administrator rights,
+    /// RoomMute installs per-user and never asks for administrator rights,
     /// so someone who got this far has not seen a UAC prompt. VB-Cable is an
     /// audio driver and will raise one. Warn, rather than let it arrive as a
     /// surprise from a link this app just opened.
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn the_cable_dialog_promises_to_stop_nagging() {
         assert!(
-            CABLE_TEXT.contains("stops NoiseGate starting with Windows"),
+            CABLE_TEXT.contains("stops RoomMute starting with Windows"),
             "the No button's side effect must be stated up front"
         );
         let main_rs = include_str!("main.rs");
@@ -165,8 +165,8 @@ mod tests {
     /// "Model missing" is only useful if it says where to put the file.
     #[test]
     fn the_missing_model_dialog_gives_the_exact_path() {
-        let text = missing_text(std::path::Path::new(r"C:\Apps\NoiseGate\model.onnx"));
-        assert!(text.contains(r"C:\Apps\NoiseGate\model.onnx"));
+        let text = missing_text(std::path::Path::new(r"C:\Apps\RoomMute\model.onnx"));
+        assert!(text.contains(r"C:\Apps\RoomMute\model.onnx"));
         assert!(text.contains(MODEL_SOURCE_URL));
     }
 }

@@ -10,7 +10,7 @@ Two files, both **DeepFilterNet3** by Hendrik Schröter and contributors.
   and `LICENSE-APACHE` in this directory. Both permit redistribution; this file
   and those licence texts are the attribution that goes with it.
 
-NoiseGate ships the model so the app works on first run. Nothing is downloaded
+RoomMute ships the model so the app works on first run. Nothing is downloaded
 and nothing is phoned home — the app has no network code at all.
 
 ## `dfn3_ours.tar.gz` — what the app loads

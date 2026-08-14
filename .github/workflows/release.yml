@@ -93,18 +93,18 @@ jobs:
       - name: Build installer
         shell: cmd
         run: |
-          "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\noisegate.iss
+          "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\roommute.iss
 
       - name: Package the portable build
         shell: bash
         run: |
           mkdir -p dist/portable
-          cp target/release/noisegate.exe target/release/onnxruntime.dll \
+          cp target/release/roommute.exe target/release/onnxruntime.dll \
              README.md LICENSE-MIT LICENSE-APACHE dist/portable/
           # The model, and the attribution that has to travel with it.
           cp models/dfn3_ours.tar.gz models/NOTICE.md dist/portable/
           cd dist/portable
-          7z a "../NoiseGate-${{ steps.version.outputs.version }}-portable.zip" .
+          7z a "../RoomMute-${{ steps.version.outputs.version }}-portable.zip" .
 
       - name: Checksums
         shell: bash
@@ -116,26 +116,26 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          name: NoiseGate ${{ steps.version.outputs.version }}
+          name: RoomMute ${{ steps.version.outputs.version }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           files: |
-            dist/NoiseGate-${{ steps.version.outputs.version }}-setup.exe
-            dist/NoiseGate-${{ steps.version.outputs.version }}-portable.zip
+            dist/RoomMute-${{ steps.version.outputs.version }}-setup.exe
+            dist/RoomMute-${{ steps.version.outputs.version }}-portable.zip
             dist/SHA256SUMS.txt
           body: |
             ## Install
 
-            Download **NoiseGate-${{ steps.version.outputs.version }}-setup.exe** and run it.
+            Download **RoomMute-${{ steps.version.outputs.version }}-setup.exe** and run it.
             It installs per-user, so there is no administrator prompt.
 
-            NoiseGate also needs a virtual audio cable so other apps can hear the
+            RoomMute also needs a virtual audio cable so other apps can hear the
             cleaned microphone — it will explain this on first run and offer to
             open the download page.
 
             The portable zip is the same binary without an installer; unzip and run
-            `noisegate.exe`.
+            `roommute.exe`.
 
             Verify your download against `SHA256SUMS.txt`.
 

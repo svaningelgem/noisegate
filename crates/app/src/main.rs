@@ -1,4 +1,4 @@
-//! NoiseGate — real-time mic noise cancellation for Windows.
+//! RoomMute — real-time mic noise cancellation for Windows.
 //!
 //! Architecture:
 //!   physical mic ─► WASAPI capture ─► ring buffer A ─► DSP (DeepFilterNet3)
@@ -55,7 +55,7 @@ fn rotate_log_if_large(log_file: &std::path::Path, max_bytes: u64) {
 fn init_tracing() {
     let log_dir = config::log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = log_dir.join("noisegate.log");
+    let log_file = log_dir.join("roommute.log");
     rotate_log_if_large(&log_file, MAX_LOG_BYTES);
 
     let file = std::fs::OpenOptions::new()
@@ -65,7 +65,7 @@ fn init_tracing() {
         .ok();
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,noisegate=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,roommute=debug"));
 
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
@@ -125,7 +125,7 @@ pub fn message_box_yes_no(text: &str) -> bool {
         MessageBoxW(
             None,
             &HSTRING::from(text),
-            &HSTRING::from("NoiseGate"),
+            &HSTRING::from("RoomMute"),
             MB_YESNO | MB_ICONWARNING,
         ) == IDYES
     }
@@ -150,7 +150,7 @@ pub fn message_box(text: &str) {
         MessageBoxW(
             None,
             &HSTRING::from(text),
-            &HSTRING::from("NoiseGate"),
+            &HSTRING::from("RoomMute"),
             MB_OK | MB_ICONERROR,
         );
     }
@@ -254,7 +254,7 @@ fn real_main(has_console: bool) -> Result<()> {
         }
     };
 
-    info!("NoiseGate starting");
+    info!("RoomMute starting");
 
     // Always print the device inventory at startup so users can identify
     // which mic to pick — especially important to spot Bluetooth-HFP
@@ -311,14 +311,14 @@ fn real_main(has_console: bool) -> Result<()> {
         Err(e) => {
             tracing::error!(error = ?e, "audio pipeline did not start");
             let problem = StartupProblem {
-                message: format!("NoiseGate is running, but audio isn't:\n\n{e:#}"),
+                message: format!("RoomMute is running, but audio isn't:\n\n{e:#}"),
             };
             (None, Some(problem))
         }
     };
 
     tray::run(cfg, pipeline, startup_error)?;
-    info!("NoiseGate exiting");
+    info!("RoomMute exiting");
     Ok(())
 }
 
@@ -382,10 +382,10 @@ fn print_help() {
     println!("{HELP}");
 }
 
-const HELP: &str = "NoiseGate — real-time mic noise cancellation\n\
+const HELP: &str = "RoomMute — real-time mic noise cancellation\n\
          \n\
          USAGE:\n\
-             noisegate.exe [OPTIONS]\n\
+             roommute.exe [OPTIONS]\n\
          \n\
          With no options it starts in the tray and cleans your microphone.\n\
          \n\
@@ -402,7 +402,7 @@ const HELP: &str = "NoiseGate — real-time mic noise cancellation\n\
              -h, --help             Show this help.\n\
          \n\
          CONFIG FILE:\n\
-             %APPDATA%\\NoiseGate\\config.toml\n\
+             %APPDATA%\\RoomMute\\config.toml\n\
              \n\
              microphones     list of mic names, best first; falls down the list\n\
                              as devices come and go, Windows' default is the\n\
@@ -484,7 +484,7 @@ fn resolve_mic_by_substring(needle: &str) -> Result<String> {
 #[cfg(not(windows))]
 fn main() -> Result<()> {
     init_tracing();
-    anyhow::bail!("NoiseGate is Windows-only. Build for x86_64-pc-windows-msvc.");
+    anyhow::bail!("RoomMute is Windows-only. Build for x86_64-pc-windows-msvc.");
 }
 
 #[cfg(windows)]
@@ -517,7 +517,7 @@ mod single_instance {
     /// account doesn't have. One tray per login session is what we actually
     /// want anyway.
     pub fn acquire() -> Result<Lock, AlreadyRunning> {
-        acquire_named(w!("Local\\NoiseGate.SingleInstance"))
+        acquire_named(w!("Local\\RoomMute.SingleInstance"))
     }
 
     /// Split out so tests can contend on a name of their own rather than on
@@ -552,7 +552,7 @@ mod single_instance {
         /// name must free up once the winner exits.
         #[test]
         fn only_one_holder_at_a_time() {
-            let name = w!("Local\\NoiseGate.SingleInstance.test");
+            let name = w!("Local\\RoomMute.SingleInstance.test");
 
             let first = acquire_named(name).expect("nothing else holds the test name");
             assert!(
@@ -588,8 +588,7 @@ mod tests {
     use super::*;
 
     fn scratch_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("noisegate-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("roommute-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
@@ -639,7 +638,7 @@ mod tests {
     #[test]
     fn small_logs_are_left_alone() {
         let dir = scratch_dir("small-log");
-        let log = dir.join("noisegate.log");
+        let log = dir.join("roommute.log");
         std::fs::write(&log, b"a few lines of startup chatter").unwrap();
 
         rotate_log_if_large(&log, 1024);
@@ -652,14 +651,14 @@ mod tests {
     #[test]
     fn oversized_logs_are_rolled_over() {
         let dir = scratch_dir("big-log");
-        let log = dir.join("noisegate.log");
+        let log = dir.join("roommute.log");
         std::fs::write(&log, vec![b'x'; 2048]).unwrap();
 
         rotate_log_if_large(&log, 1024);
 
         assert!(!log.exists(), "oversized log should have been moved aside");
         let rolled = log.with_extension("log.old");
-        assert!(rolled.exists(), "expected noisegate.log.old");
+        assert!(rolled.exists(), "expected roommute.log.old");
         assert_eq!(std::fs::metadata(&rolled).unwrap().len(), 2048);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -668,8 +667,8 @@ mod tests {
     fn missing_log_is_not_an_error() {
         let dir = scratch_dir("no-log");
         // First run: nothing to rotate, and nothing should blow up.
-        rotate_log_if_large(&dir.join("noisegate.log"), 1024);
-        assert!(!dir.join("noisegate.log.old").exists());
+        rotate_log_if_large(&dir.join("roommute.log"), 1024);
+        assert!(!dir.join("roommute.log.old").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -745,7 +744,7 @@ mod tests {
     }
 
     /// `Instant::now() - d` panics when the machine has been up for less than
-    /// `d`, and NoiseGate starts at login, so boot is exactly when that
+    /// `d`, and RoomMute starts at login, so boot is exactly when that
     /// happens. It shipped once as a "60 seconds ago" sentinel meaning "never
     /// logged".
     ///
@@ -778,7 +777,7 @@ mod tests {
                 assert!(
                     !line.contains(needle),
                     "{name}:{} subtracts from a fresh Instant, which panics on a \
-                     machine that has just booted — and NoiseGate starts at login:\n  {}",
+                     machine that has just booted — and RoomMute starts at login:\n  {}",
                     n + 1,
                     line.trim()
                 );
