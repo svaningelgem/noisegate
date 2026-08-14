@@ -2,9 +2,20 @@
 **/*.rs.bk
 # Local audio for testing the DSP path. Real voices, several MB each — keep
 # them next to the project, out of the history.
-/samples/
+/samples/*
 .vscode/
 .idea/
 *.log
 # Built installers.
 /dist/
+
+# Demo sample: the ~1.3 GB of source downloads stay local; the mixture itself
+# is committed (see samples/demo_*.wav) because the README links to it.
+.demo-cache/
+
+# ...except the openly licensed demo the README points at. MP3, not WAV:
+# the 5.8 MB originals rebuild from scripts/make_demo_sample.py.
+!samples/demo_raw.mp3
+!samples/demo_cleaned.mp3
+!samples/demo_rnnoise.mp3
+!samples/demo_ATTRIBUTION.txt
