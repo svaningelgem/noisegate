@@ -15,7 +15,7 @@
   #define AppVersion   "0.1.0"
 #endif
 #define AppPublisher   "NoiseGate contributors"
-#define AppURL         "https://github.com/Yashsomalkar/noisegate"
+#define AppURL         "https://github.com/svaningelgem/noisegate"
 #define AppExe         "noisegate.exe"
 #define SourceDir      "..\target\release"
 

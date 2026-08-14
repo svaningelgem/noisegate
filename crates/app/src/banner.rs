@@ -21,6 +21,9 @@ const ASCII_ART: &str = r#"
 "#;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Straight from Cargo.toml, so the banner cannot drift from `repository`
+/// the way a hand-copied URL did when this project moved.
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 pub fn print() {
     enable_vt_processing();
@@ -28,7 +31,7 @@ pub fn print() {
     // Banner in bright green, tagline in normal green, divider dim.
     print!("{BRIGHT_GREEN}{ASCII_ART}{RESET}");
     println!("{GREEN}    real-time mic noise cancellation  •  windows  •  rust{RESET}");
-    println!("{DIM_GREEN}    v{VERSION}  •  https://github.com/Yashsomalkar/noisegate{RESET}");
+    println!("{DIM_GREEN}    v{VERSION}  •  {REPOSITORY}{RESET}");
     println!(
         "{DIM_GREEN}    ────────────────────────────────────────────────────────────────────────{RESET}"
     );

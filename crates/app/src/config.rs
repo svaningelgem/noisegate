@@ -40,10 +40,13 @@ pub struct Config {
     /// `--features onnx`.
     #[serde(default)]
     pub model_path: String,
-    /// Run the ONNX model instead of the built-in RNNoise. On by default: on
-    /// competing speech DeepFilterNet3 removes ~19 dB where RNNoise removes
-    /// ~0.5 dB, which is the difference between usable and not. Falls back to
-    /// RNNoise on its own if no model is present.
+    /// Run DeepFilterNet3 instead of the built-in RNNoise. On by default:
+    /// against a competing voice it gains 3.6 dB of SNR where RNNoise gains
+    /// none at all, and in a room with several noise sources 9.6 dB against
+    /// 6.8 dB. Falls back to RNNoise on its own if no model is present.
+    ///
+    /// The name is historical — the model now runs through tract rather than
+    /// ONNX Runtime — but it is what sits in everyone's config.toml already.
     #[serde(default = "default_true")]
     pub use_onnx: bool,
 }

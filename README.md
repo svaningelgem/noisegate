@@ -22,9 +22,9 @@ Fans, hum and typing are *stationary* noise. Every denoiser handles those; Windo
 
 Your neighbour's voice is a different problem — because every speech-enhancement model is trained to **preserve speech**, and your neighbour is speech.
 
-Here is the same 60-second recording — one person at the microphone, a child talking loudly across the room — through four backends. Background speech is the middle of the level distribution; your own voice is the top:
+Here is the same 60-second recording — one person at the microphone, a child talking loudly across the room — through four models. In that recording the middle of the loudness range is mostly the child and the top of it is you, so the two columns are roughly *how much of the child went away* and *how much of you went with them*:
 
-| backend | background speech | your voice |
+| model | the child | you |
 |---|---|---|
 | **DeepFilterNet3** | **−19.3 dB** | −0.1 dB |
 | GTCRN | −11.1 dB | −0.9 dB |
@@ -35,6 +35,8 @@ The newest and largest model came **last**. It is excellent at enhancing speech,
 
 DeepFilterNet3 is the outlier: it discriminates on proximity and reverberation, which is exactly the cue that separates *you* from *the room*. So that is what NoiseGate ships, tuned for surrounding conversation rather than hiss.
 
+Treat that table as a ranking, not a score. It leans on loudness percentiles, which cannot tell *removed the child* apart from *turned everything down* — and the recording is my family, so you cannot check it yourself. The measurement in the next section fixes both problems.
+
 ### Hear it
 
 Twenty seconds, everything at once: ventilation, cafeteria babble, street traffic and a neighbour through the wall, all at the same time. You hear the raw microphone first, then the same twenty seconds cleaned. **Orange is whichever one you are hearing**, so you can watch the difference at the moment it happens.
@@ -43,7 +45,16 @@ https://github.com/user-attachments/assets/40c809fc-33a0-4098-a334-eb2d9c3184c0
 
 > **Unmute it.** GitHub always starts videos muted, and a silent noise-cancellation demo proves very little.
 
-**[The full two-minute tour](https://github.com/user-attachments/assets/4c229f14-d712-4d34-ba94-69c7313be1ff)** walks all six environments one at a time. Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned.mp3)** · **[RNNoise, for comparison](samples/demo_rnnoise.mp3)**. Both clips are in [`samples/`](samples/) too, and rebuild from the scripts below.
+<details>
+<summary><b>▶ The full two-minute tour</b> — all six environments, one at a time</summary>
+
+<video src="https://github.com/user-attachments/assets/4c229f14-d712-4d34-ba94-69c7313be1ff" controls></video>
+
+Clean speech first as a reference, then ventilation, cafeteria babble, street traffic, a neighbour through the wall, and finally everything together. Each one runs twice: input, then output.
+
+</details>
+
+Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned.mp3)** · **[RNNoise, for comparison](samples/demo_rnnoise.mp3)**. Both videos are committed in [`samples/`](samples/) as well, and everything rebuilds from the scripts below.
 
 ### And rebuild it
 
@@ -88,7 +99,7 @@ Caveat on the sample: LibriSpeech is 16 kHz, so nothing above 8 kHz is real. DEM
 
 ## Install
 
-**[Download the installer](https://github.com/Yashsomalkar/noisegate/releases)** and run it. Per-user, no administrator prompt, no driver.
+**[Download the installer](https://github.com/svaningelgem/noisegate/releases)** and run it. Per-user, no administrator prompt, no driver.
 
 The model ships inside it. Nothing is downloaded on first run, and there is no "now go and fetch a 16 MB file from Hugging Face" step.
 
@@ -100,7 +111,7 @@ Then, in Zoom, Teams, Discord, OBS or your browser: **pick `CABLE Output` as you
 <summary><b>Build from source instead</b></summary>
 
 ```powershell
-git clone https://github.com/Yashsomalkar/noisegate
+git clone https://github.com/svaningelgem/noisegate
 cd noisegate
 cargo build --release
 ```
@@ -148,7 +159,9 @@ It prints what it did:
 noise_floor="-67.1 -> -100.2 dB (-33.2)"  speech="-25.4 -> -26.0 dB (-0.7)"  rtf="0.038"
 ```
 
-33 dB off the background, 0.7 dB off your voice, at 26× realtime. That is the whole product in one line.
+`noise_floor` is the quietest tenth of the file and `speech` the loudest twentieth. So: between words it went to digital silence, your own voice lost 0.7 dB, and it ran at 26× realtime.
+
+Useful as a smoke test, but do not read too much into the first number — a plain noise gate scores well on it too, which is exactly why the comparison above measures while the voice is *present* instead.
 
 ---
 
@@ -176,10 +189,10 @@ That fetches the checkpoint, converts it, and writes the model the app loads. No
 
 Two backends, switchable from the tray while running:
 
-| backend | background speech | CPU | needs |
-|---|---|---|---|
-| **DeepFilterNet3** (default) | −19 dB | ~4% of one core | nothing — bundled |
-| **RNNoise** | −6.5 dB | ~0.3% of one core | nothing — embedded |
+| backend | a neighbour talking | a busy room | CPU | needs |
+|---|---|---|---|---|
+| **DeepFilterNet3** (default) | **+3.6 dB** | **+9.6 dB** | ~4% of one core | nothing — bundled |
+| **RNNoise** | −0.0 dB | +6.8 dB | ~0.3% of one core | nothing — embedded |
 
 RNNoise earns its place: ~50× less compute, no model file at all, and genuinely good at fans and hiss. It simply cannot touch a voice in the next room, because it was trained not to. NoiseGate falls back to it automatically if no model is found, so it always does something useful.
 
@@ -193,7 +206,8 @@ RNNoise earns its place: ~50× less compute, no model file at all, and genuinely
 microphones = ["Microphone (Yeti)", "Microphone (Webcam)"]  # preference order
 output_device = ""        # empty = find the virtual cable automatically
 enabled = true            # master on/off
-use_onnx = true           # false = RNNoise
+use_onnx = true           # false = RNNoise. Historical name: it selects
+                          # DeepFilterNet3, which runs through tract, not ONNX
 attenuation_db = 100.0    # how hard to suppress; 100 = no limit, 25 = gentler
 model_path = ""           # empty = use the model beside the executable
 ```
@@ -245,6 +259,8 @@ Tests are written **test-first**: write it, watch it fail for the right reason, 
 
 ## Credits
 
+**Forked from [Yashsomalkar/noisegate](https://github.com/Yashsomalkar/noisegate)**, which is where the WASAPI capture and render core came from. This repository is where the work continued; the original author is credited in `Cargo.toml` alongside me.
+
 - **[DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)** — Hendrik Schröter et al. The model, and the tract runner that streams it correctly.
 - **[RNNoise](https://gitlab.xiph.org/xiph/rnnoise)** — Jean-Marc Valin / Xiph.Org, via **[`nnnoiseless`](https://github.com/jneem/nnnoiseless)** by jneem.
 - **[VB-Cable](https://vb-audio.com/Cable/)** — VB-Audio. The free virtual driver every Windows routing app depends on.
@@ -261,5 +277,5 @@ The demo audio in `samples/demo_*.mp3` is **not** MIT. It is built from [LibriSp
 
 ## Issues & discussion
 
-- [Report a bug or request a feature](https://github.com/Yashsomalkar/noisegate/issues)
-- [Discussions](https://github.com/Yashsomalkar/noisegate/discussions) for questions and ideas
+- [Report a bug or request a feature](https://github.com/svaningelgem/noisegate/issues)
+- [Discussions](https://github.com/svaningelgem/noisegate/discussions) for questions and ideas
