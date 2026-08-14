@@ -1,45 +1,193 @@
-"""Export DeepFilterNet3 to ONNX from the published checkpoint.
+# /// script
+# requires-python = ">=3.10,<3.12"
+# dependencies = [
+#     "deepfilternet==0.5.6",
+#     "torch>=2.0,<2.2",
+#     "torchaudio>=2.0,<2.2",
+#     "onnx>=1.15",
+#     "onnxruntime>=1.15",
+#     "numpy>=1.22,<2",
+#     "MonkeyType",
+# ]
+# ///
+"""Convert DeepFilterNet3's published weights into the model NoiseGate runs.
 
-Runs upstream's own `df.scripts.export` — we are not reimplementing anything,
-just driving it — with two environment workarounds:
+    uv run scripts/export_dfn3.py [OUTPUT_DIR]
 
-1. `sqlite3` and `monkeytype` are imported *first*. `df` pulls in torch, which
-   loads the system libstdc++; miniforge's libicui18n then wants a newer
-   CXXABI than that provides, so a later `import sqlite3` dies with
-   "CXXABI_1.3.15 not found". Importing it before torch gets in first and the
-   whole chain works. The symptom is misleading: upstream guards its export
-   with `import monkeytype`, so the failure surfaces as "Failed to import
-   monkeytype", which is not the actual problem.
+That is the whole thing. uv installs the dependencies into a throwaway
+environment, the script downloads the official checkpoint, and it writes a
+`DeepFilterNet3_onnx.tar.gz` that `noisegate --model <that file>` loads
+directly. Nothing needs to be installed first except uv, and nothing is left
+behind on your system.
 
-2. PYTHONPATH must point at the repo checkout rather than the installed df
-   wheel, because the wheel does not ship a working scripts/export.py path for
-   this checkpoint layout.
+Two pins are load-bearing, so leave them alone unless you are testing an
+upgrade:
 
-Usage:
-    python export_dfn3.py <model_base_dir> <export_dir>
+* **Python < 3.12** — DeepFilterLib, the packaged Rust front-end that does the
+  STFT and ERB banding, publishes wheels only up to cp311. uv fetches a
+  suitable interpreter itself if you do not have one.
+* **torch/torchaudio < 2.2** — `deepfilternet` 0.5.6 imports
+  `torchaudio.backend.common.AudioMetaData`, which later torchaudio moved and
+  then deleted. Newer versions fail at import with `No module named
+  'torchaudio.backend'`.
 
-e.g.  python export_dfn3.py /root/dfn3ref/DeepFilterNet3 /root/dfn3export
+## What comes out
 
-Produces enc.onnx, erb_dec.onnx and df_dec.onnx: the encoder/decoder split.
-The STFT front-end deliberately stays outside the graph — inputs are
-`feat_erb` and `feat_spec`, which is what crates/dsp/src/dfn_frontend.rs
-already computes, bit-exactly against libDF.
+Three graphs plus a config, tarred together:
+
+    enc.onnx       features      -> embedding + skip connections
+    erb_dec.onnx   embedding     -> ERB gain mask
+    df_dec.onnx    embedding     -> deep-filter coefficients
+
+Upstream splits it this way on purpose: the STFT front-end belongs in the host
+application, not the graph. NoiseGate runs these through DeepFilterNet's own
+tract runner, which streams them correctly — see docs/model-pipeline.md for
+why running them frame-at-a-time under ONNX Runtime silently destroys ~6 dB of
+the near voice.
+
+Two of the three graphs come out byte-identical to upstream's own release,
+which is the evidence that this conversion is faithful rather than merely
+plausible.
+
+## Provenance
+
+Weights: DeepFilterNet3, © 2021 Hendrik Schröter, MIT/Apache-2.0.
+<https://github.com/Rikorose/DeepFilterNet>. See models/NOTICE.md.
 """
 
-import sqlite3  # noqa: F401  MUST come before df; see above
-import monkeytype  # noqa: F401
-import runpy
+import io
 import sys
+import zipfile
+from pathlib import Path
+from urllib.request import urlopen
 
-if len(sys.argv) != 3:
-    print(__doc__)
-    sys.exit(2)
+# MUST come before anything imports torch. `df` pulls torch in, torch loads the
+# system libstdc++, and on some Linux setups a later `import sqlite3` then dies
+# with "CXXABI_1.3.15 not found" from the interpreter's own libicui18n.
+# Upstream's export guards itself with `import monkeytype`, which imports
+# sqlite3 transitively — so the failure surfaces as "Failed to import
+# monkeytype" and installing MonkeyType does not fix it. Getting in first does.
+import sqlite3  # noqa: E402,F401
 
-model_base_dir, export_dir = sys.argv[1], sys.argv[2]
-sys.argv = [
-    "df.scripts.export",
-    "--model-base-dir",
-    model_base_dir,
-    export_dir,
-]
-runpy.run_module("df.scripts.export", run_name="__main__")
+CHECKPOINT_URL = (
+    "https://github.com/Rikorose/DeepFilterNet/raw/main/models/DeepFilterNet3.zip"
+)
+
+
+def fetch_checkpoint(into: Path) -> Path:
+    """Download and unpack the published checkpoint. Cached after the first run."""
+    model_dir = into / "DeepFilterNet3"
+    if (model_dir / "config.ini").exists():
+        print(f"checkpoint already present: {model_dir}")
+        return model_dir
+
+    print(f"fetching {CHECKPOINT_URL}")
+    into.mkdir(parents=True, exist_ok=True)
+    with urlopen(CHECKPOINT_URL) as r:  # noqa: S310  fixed https URL
+        blob = r.read()
+    print(f"  {len(blob) / 1e6:.1f} MB")
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        z.extractall(into)
+
+    if not (model_dir / "config.ini").exists():
+        raise SystemExit(f"unpacked archive has no config.ini under {model_dir}")
+    return model_dir
+
+
+def patch_windows_url_bug() -> None:
+    """Work around `get_test_sample` building its URL with `os.path.join`.
+
+    `df.io.get_test_sample` fetches a speech clip that the exporter runs
+    through both torch and ONNX to check they agree. It composes the URL with
+    `os.path.join`, which on Windows yields
+    `.../main/assets\\clean_freesound_33711.wav` and 404s. Nothing is wrong
+    with the export itself — it just never gets there.
+
+    Rather than skip the check, fetch the same file with a correct URL. If the
+    machine is offline, fall back to noise: any signal exercises the
+    comparison, speech merely makes a failure easier to interpret.
+    """
+    import df.io
+
+    url = "https://github.com/Rikorose/DeepFilterNet/raw/main/assets/clean_freesound_33711.wav"
+
+    def get_test_sample(sr: int = 48000):
+        import torch
+
+        try:
+            with urlopen(url) as r:  # noqa: S310  fixed https URL
+                blob = r.read()
+            clip = Path(sys.argv[0]).parent / ".test_sample.wav"
+            clip.write_bytes(blob)
+            sample, _ = df.io.load_audio(str(clip), sr=sr)
+            clip.unlink(missing_ok=True)
+            return sample
+        except Exception as e:  # noqa: BLE001  any failure -> synthetic
+            print(f"  (test clip unavailable: {e}; checking against noise instead)")
+            return torch.randn(1, sr * 2) * 0.05
+
+    df.io.get_test_sample = get_test_sample
+
+
+def main() -> None:
+    out = Path(sys.argv[1] if len(sys.argv) > 1 else "models/dfn3-export").resolve()
+    work = out / "checkpoint"
+    model_dir = fetch_checkpoint(work)
+
+    out.mkdir(parents=True, exist_ok=True)
+    patch_windows_url_bug()
+
+    import torch
+
+    import df
+
+    print(
+        f"python {sys.version.split()[0]}  torch {torch.__version__}  "
+        f"deepfilternet {getattr(df, '__version__', '?')}"
+    )
+    print(f"exporting to {out}")
+
+    import argparse
+
+    import df.scripts.export as exporter
+
+    # Upstream scripts two of the three graphs through `torch.jit.script`
+    # before exporting. On the published 0.5.6 wheel that fails with
+    # "Unsupported value kind: Tensor" — the model definition there is not
+    # scriptable under torch 2.1, though the same code in their git tree is.
+    #
+    # jit is only an aid to the export; upstream already passes jit=False for
+    # the full-model path. Forcing it off everywhere is what makes this work
+    # from PyPI alone, with no clone and no Rust toolchain.
+    original = exporter.export_impl
+
+    def without_jit(*args, **kwargs):
+        kwargs["jit"] = False
+        return original(*args, **kwargs)
+
+    exporter.export_impl = without_jit
+
+    exporter.main(
+        argparse.Namespace(
+            model_base_dir=str(model_dir),
+            export_dir=str(out),
+            pf=False,
+            log_level="INFO",
+            epoch="best",
+            check=True,
+            simplify=False,
+            opset=17,
+        )
+    )
+
+    produced = sorted(p.name for p in out.glob("*.onnx"))
+    tar = next(out.glob("*_onnx.tar.gz"), None)
+    print(f"\ngraphs: {', '.join(produced) or 'NONE'}")
+    if tar is None:
+        raise SystemExit("no *_onnx.tar.gz was produced")
+    print(f"model:  {tar}  ({tar.stat().st_size / 1e6:.1f} MB)")
+    print(f"\n  noisegate --denoise in.wav out.wav --model {tar}")
+
+
+if __name__ == "__main__":
+    main()
