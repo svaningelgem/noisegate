@@ -45,8 +45,8 @@ pub struct Config {
     /// none at all, and in a room with several noise sources 9.6 dB against
     /// 6.8 dB. Falls back to RNNoise on its own if no model is present.
     ///
-    /// The name is historical — the model now runs through tract rather than
-    /// ONNX Runtime — but it is what sits in everyone's config.toml already.
+    /// The key is named for ONNX; the model runs through tract. Renaming it
+    /// would silently reset the setting in every existing config.toml.
     #[serde(default = "default_true")]
     pub use_onnx: bool,
 }

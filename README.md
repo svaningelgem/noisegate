@@ -22,21 +22,6 @@ Fans, hum and typing are *stationary* noise. Every denoiser handles those; Windo
 
 Your neighbour's voice is a different problem — because every speech-enhancement model is trained to **preserve speech**, and your neighbour is speech.
 
-Here is the same 60-second recording — one person at the microphone, a child talking loudly across the room — through four models. In that recording the middle of the loudness range is mostly the child and the top of it is you, so the two columns are roughly *how much of the child went away* and *how much of you went with them*:
-
-| model | the child | you |
-|---|---|---|
-| **DeepFilterNet3** | **−19.3 dB** | −0.1 dB |
-| GTCRN | −11.1 dB | −0.9 dB |
-| RNNoise | −6.5 dB | −0.4 dB |
-| MossFormer2 (newer, larger) | −5.5 dB | −0.2 dB |
-
-The newest and largest model came **last**. It is excellent at enhancing speech, so it faithfully preserves the voice you wanted gone.
-
-DeepFilterNet3 is the outlier: it discriminates on proximity and reverberation, which is exactly the cue that separates *you* from *the room*. So that is what NoiseGate ships, tuned for surrounding conversation rather than hiss.
-
-Treat that table as a ranking, not a score. It leans on loudness percentiles, which cannot tell *removed the child* apart from *turned everything down* — and the recording is my family, so you cannot check it yourself. The measurement in the next section fixes both problems.
-
 ### Hear it
 
 Twenty seconds, everything at once: ventilation, cafeteria babble, street traffic and a neighbour through the wall, all at the same time. You hear the raw microphone first, then the same twenty seconds cleaned. **Orange is whichever one you are hearing**, so you can watch the difference at the moment it happens.
@@ -54,46 +39,7 @@ Clean speech first as a reference, then ventilation, cafeteria babble, street tr
 
 </details>
 
-Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned.mp3)** · **[RNNoise, for comparison](samples/demo_rnnoise.mp3)**. Both videos are committed in [`samples/`](samples/) as well, and everything rebuilds from the scripts below.
-
-### And rebuild it
-
-That first recording has my family in it, so it stays on my disk. None of this does — it is assembled from openly licensed audio by scripts in this repo, and you can build byte-identical copies:
-
-```bash
-uv run scripts/make_demo_sample.py     # LibriSpeech + DEMAND, ~1.3 GB once
-noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
-uv run scripts/analyse_demo.py         # the table below, and the spectrogram
-uv run scripts/make_demo_video.py      # the videos above (needs ffmpeg)
-```
-
-One voice throughout, six ten-second segments, a different problem in each:
-
-![spectrogram of the demo, before and after](docs/demo-spectrogram.png)
-
-| segment | DeepFilterNet3 | RNNoise |
-|---|---|---|
-| office ventilation | +2.6 dB | **+7.4 dB** |
-| cafeteria babble | **+8.0 dB** | +4.5 dB |
-| street traffic | **+10.2 dB** | +7.5 dB |
-| **neighbour through wall** | **+3.6 dB** | **−0.0 dB** |
-| everything at once | **+9.6 dB** | +6.8 dB |
-
-Signal-to-noise improvement measured **while the person is speaking** — the only moment that is hard, because you cannot solve it by muting.
-
-Read the last row first: against a competing voice **RNNoise achieves nothing at all**, and it is not a broken build — it is a 2017 model trained on noise, doing exactly what it was designed to do. Read the first row second: for plain ventilation hum RNNoise is *nearly three times better* than the model we ship, at 1/50th the CPU. Both facts are in the box.
-
-<details>
-<summary><b>Why not just measure the quiet bits between sentences?</b></summary>
-
-Because it flatters whichever model gates hardest. That was the first version of this measurement, and by it RNNoise beat DeepFilterNet3 on every single row — including the neighbour, where it does nothing. Scoring the pauses rewards silence, and silence is free.
-
-The neighbour is only a problem while *you* are talking, so that is when it is measured. This mixture is synthetic precisely so that is possible: `demo_clean_reference.wav` is the near voice alone, which makes the error signal exactly the part that should not be there.
-
-The same trap, in its more expensive form, is in [`docs/training.md`](docs/training.md) — it is how two overnight training runs were scored as successes before anyone listened to them.
-</details>
-
-Caveat on the sample: LibriSpeech is 16 kHz, so nothing above 8 kHz is real. DEMAND has no airshow, so "traffic" and "cafeteria" stand in for the outdoor and crowd cases; inventing a synthetic aeroplane would have proved nothing.
+Audio only: **[before](samples/demo_raw.mp3)** · **[after](samples/demo_cleaned.mp3)** · **[RNNoise, for comparison](samples/demo_rnnoise.mp3)**. Both videos are committed in [`samples/`](samples/), and [Measuring it](#measuring-it-and-rebuilding-the-proof) has the numbers and the scripts that rebuild all of it.
 
 ---
 
@@ -161,7 +107,7 @@ noise_floor="-67.1 -> -100.2 dB (-33.2)"  speech="-25.4 -> -26.0 dB (-0.7)"  rtf
 
 `noise_floor` is the quietest tenth of the file and `speech` the loudest twentieth. So: between words it went to digital silence, your own voice lost 0.7 dB, and it ran at 26× realtime.
 
-Useful as a smoke test, but do not read too much into the first number — a plain noise gate scores well on it too, which is exactly why the comparison above measures while the voice is *present* instead.
+Useful as a smoke test. Do not read too much into the first number, though: it is the level between words, and a plain noise gate scores well on it too. [Measuring it](#measuring-it-and-rebuilding-the-proof) does the honest version.
 
 ---
 
@@ -196,6 +142,45 @@ Two backends, switchable from the tray while running:
 
 RNNoise earns its place: ~50× less compute, no model file at all, and genuinely good at fans and hiss. It simply cannot touch a voice in the next room, because it was trained not to. NoiseGate falls back to it automatically if no model is found, so it always does something useful.
 
+## Measuring it, and rebuilding the proof
+
+Every number here comes from one 60-second sample, and nothing about it is private: it is assembled from openly licensed audio by scripts in this repo, and these four commands rebuild it byte for byte on any machine.
+
+```bash
+uv run scripts/make_demo_sample.py     # LibriSpeech + DEMAND, ~1.3 GB once
+noisegate --denoise samples/demo_raw.wav samples/demo_cleaned.wav
+uv run scripts/analyse_demo.py         # the table and the spectrogram
+uv run scripts/make_demo_video.py      # the two videos (needs ffmpeg)
+```
+
+One voice throughout, six ten-second segments, a different problem in each:
+
+![spectrogram of the demo, before and after](docs/demo-spectrogram.png)
+
+| segment | DeepFilterNet3 | RNNoise |
+|---|---|---|
+| office ventilation | +2.6 dB | **+7.4 dB** |
+| cafeteria babble | **+8.0 dB** | +4.5 dB |
+| street traffic | **+10.2 dB** | +7.5 dB |
+| **neighbour through wall** | **+3.6 dB** | **−0.0 dB** |
+| everything at once | **+9.6 dB** | +6.8 dB |
+
+Signal-to-noise improvement measured **while the person is speaking** — the only moment that is hard, because you cannot solve it by muting.
+
+Read the last row first: against a competing voice **RNNoise achieves nothing at all**, and it is not a broken build — it is a 2017 model trained on noise, doing exactly what it was designed to do. Read the first row second: for plain ventilation hum RNNoise is *nearly three times better* than the model we ship, at 1/50th the CPU. Both facts are in the box.
+
+<details>
+<summary><b>Why not just measure the quiet bits between sentences?</b></summary>
+
+Because silence is free. Scoring the gaps rewards whichever model mutes hardest, and by that metric RNNoise wins every row here — including against a competing voice, where it removes nothing whatsoever. A denoiser that outputs digital silence between your sentences would score perfectly and be useless.
+
+A neighbour is only a problem while *you* are talking, because that is when you cannot simply mute. So that is when it is measured. The mixture is synthetic for exactly this reason: `demo_clean_reference.wav` holds the near voice on its own, which makes the difference between it and the output precisely the part that should not be there.
+
+[`docs/training.md`](docs/training.md) has the expensive version of the same trap.
+</details>
+
+Caveat on the sample: LibriSpeech is 16 kHz, so nothing above 8 kHz is real. DEMAND has no airshow, so "traffic" and "cafeteria" stand in for the outdoor and crowd cases; inventing a synthetic aeroplane would have proved nothing.
+
 ---
 
 ## Configuration
@@ -206,8 +191,8 @@ RNNoise earns its place: ~50× less compute, no model file at all, and genuinely
 microphones = ["Microphone (Yeti)", "Microphone (Webcam)"]  # preference order
 output_device = ""        # empty = find the virtual cable automatically
 enabled = true            # master on/off
-use_onnx = true           # false = RNNoise. Historical name: it selects
-                          # DeepFilterNet3, which runs through tract, not ONNX
+use_onnx = true           # true = DeepFilterNet3, false = RNNoise. The key
+                          # is named for ONNX; the model runs through tract
 attenuation_db = 100.0    # how hard to suppress; 100 = no limit, 25 = gentler
 model_path = ""           # empty = use the model beside the executable
 ```
