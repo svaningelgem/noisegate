@@ -33,6 +33,14 @@ toml = "0.8"
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
 
+# tract validates node-name uniqueness only when debug assertions are on, and
+# DeepFilterNet3's published export has a duplicate (`/convt3/Conv.bias`). The
+# release build loads it happily and produces output that correlates 1.0000
+# with the reference, so the graph itself is sound -- but a debug test binary
+# refuses it, which would leave the shipping backend permanently untestable.
+[profile.test.package.tract-core]
+debug-assertions = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

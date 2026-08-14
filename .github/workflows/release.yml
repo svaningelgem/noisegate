@@ -82,7 +82,7 @@ jobs:
 
       - name: Coverage
         if: always()
-        run: cargo llvm-cov --all-features --fail-under-lines 68
+        run: cargo llvm-cov --all-features --fail-under-lines 70
 
       - name: Build
         run: cargo build --release --all-features

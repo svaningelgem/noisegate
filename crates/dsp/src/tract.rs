@@ -78,7 +78,7 @@ impl TractDenoiser {
     pub fn load(tar_gz: impl AsRef<Path>, attenuation_db: f32) -> Result<Self> {
         let path = tar_gz.as_ref();
         let params = DfParams::new(path.to_path_buf())
-            .map_err(|e| DspError::Load(format!("loading {}: {e}", path.display())))?;
+            .map_err(|e| DspError::Load(format!("loading {}: {e:#}", path.display())))?;
 
         // 0 dB would mean "suppress nothing", which is not what the config
         // means by 0 — there it means "no limit". Upstream spells that as a
@@ -94,7 +94,7 @@ impl TractDenoiser {
             .with_thresholds(NEVER, ALWAYS, ALWAYS);
 
         let inner = DfTract::new(params, &runtime)
-            .map_err(|e| DspError::Load(format!("initialising the tract model: {e}")))?;
+            .map_err(|e| DspError::Load(format!("initialising the tract model: {e:#}")))?;
 
         if inner.hop_size != FRAME_SAMPLES {
             return Err(DspError::Load(format!(
@@ -137,5 +137,105 @@ impl Denoiser for TractDenoiser {
 
     fn name(&self) -> &'static str {
         "DeepFilterNet3 (tract)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// The model the installer ships, so these run anywhere the repo is
+    /// checked out — no download, no fixture to regenerate.
+    fn shipped_model() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/dfn3_ours.tar.gz")
+    }
+
+    fn noise(seed: &mut u32) -> [f32; FRAME_SAMPLES] {
+        let mut f = [0.0f32; FRAME_SAMPLES];
+        for s in f.iter_mut() {
+            // xorshift: a fixed sequence, so a failure reproduces exactly.
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 17;
+            *seed ^= *seed << 5;
+            *s = (*seed as f32 / u32::MAX as f32 - 0.5) * 0.4;
+        }
+        f
+    }
+
+    fn rms(f: &[f32]) -> f32 {
+        (f.iter().map(|s| s * s).sum::<f32>() / f.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_missing_model_reports_the_path_instead_of_panicking() {
+        // Matched rather than `expect_err`: the Ok type wraps tract internals
+        // that are not Debug, so unwrapping the error needs no formatting.
+        let Err(err) = TractDenoiser::load("no/such/model.tar.gz", 0.0) else {
+            panic!("loading a path that does not exist must fail");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no/such/model.tar.gz"),
+            "the error has to name the file the user got wrong, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_shipped_model_loads_and_says_what_it_is() {
+        let d = TractDenoiser::load(shipped_model(), 0.0).expect("the bundled model must load");
+        assert_eq!(d.name(), "DeepFilterNet3 (tract)");
+    }
+
+    /// The reason this backend exists. DeepFilterNet3's GRUs and temporal
+    /// convolutions carry state that upstream's export does not expose as
+    /// graph inputs, so a runtime that cannot stream resets the model's whole
+    /// memory every 10 ms. That still produces plausible audio — which is what
+    /// makes it dangerous — while stripping ~6 dB from the near voice.
+    ///
+    /// Identical input twice must therefore give *different* output: the
+    /// second call sees a model that remembers the first. If this ever passes
+    /// with equal outputs, the streaming has silently stopped working.
+    #[test]
+    fn the_model_remembers_previous_frames() {
+        let mut d = TractDenoiser::load(shipped_model(), 0.0).expect("load");
+        let mut seed = 0x5eed_1234;
+        let source = noise(&mut seed);
+
+        let mut first = source;
+        d.process_frame(&mut first).expect("process");
+        let mut second = source;
+        d.process_frame(&mut second).expect("process");
+
+        assert_ne!(
+            first, second,
+            "the same frame processed twice gave identical output, so no state \
+             survived between calls — the graph is not being streamed"
+        );
+    }
+
+    #[test]
+    fn broadband_noise_comes_out_quieter_than_it_went_in() {
+        let mut d = TractDenoiser::load(shipped_model(), 0.0).expect("load");
+        let mut seed = 0x1234_5eed;
+        let (mut fed, mut got) = (0.0f32, 0.0f32);
+
+        // The first frames are the model filling its lookahead and settling,
+        // so judge on the tail rather than the whole run.
+        for i in 0..60 {
+            let mut f = noise(&mut seed);
+            let before = rms(&f);
+            d.process_frame(&mut f).expect("process");
+            if i >= 30 {
+                fed += before;
+                got += rms(&f);
+            }
+        }
+
+        assert!(
+            got < fed * 0.5,
+            "noise with no speech in it should be heavily suppressed: {fed:.4} in, {got:.4} out"
+        );
     }
 }

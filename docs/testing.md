@@ -18,8 +18,8 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **68%**, just under the
-70.2% actually reached. A pull request may raise that number; it must
+CI enforces a **minimum** line coverage, currently **70%**, just under the
+71.2% actually reached. A pull request may raise that number; it must
 never lower it. When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
 PR — a tag must never publish something a pull request would have failed.
@@ -49,12 +49,31 @@ PR — a tag must never publish something a pull request would have failed.
 | `tray.rs` | 52% | the watchdog, menu labels and icons; the event loop is not |
 | `main.rs` | 48% | argument parsing and the single-instance lock; `real_main` is not |
 | `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
-| **`dsp/tract.rs`** | **0%** | **the shipping backend, and none of it is tested — see below** |
+| `dsp/tract.rs` | 87% | loads the real bundled model and runs audio through it |
 
-`tract.rs` is the gap that matters. It is what the app actually runs, and every
-line of it is uncovered: constructing it needs the real 8 MB model, which makes
-it an integration test rather than a unit one. `models/dfn3_ours.tar.gz` is in
-the repo, so nothing blocks writing it except the work.
+`tract.rs` is tested against `models/dfn3_ours.tar.gz` itself rather than a
+stand-in, because the property worth guarding cannot be faked: DeepFilterNet3
+carries GRU and convolution state that upstream's export does not expose as
+graph inputs, so a runtime that cannot stream resets the model's memory every
+10 ms. That still produces plausible audio while stripping ~6 dB from the near
+voice. `the_model_remembers_previous_frames` feeds one frame twice and requires
+the outputs to differ; with the state reset it fails, which was checked by
+reloading the model between the two calls and watching it go red.
+
+### tract needs its debug assertions off to load the model
+
+`Cargo.toml` carries a profile override:
+
+```toml
+[profile.test.package.tract-core]
+debug-assertions = false
+```
+
+tract checks node-name uniqueness only under debug assertions, and
+DeepFilterNet3's published export has a duplicate — `/convt3/Conv.bias`. The
+release build loads the same file without complaint and its output correlates
+1.0000 with the reference, so the graph is sound; a debug test binary refuses
+it. Without the override the shipping backend could not be tested at all.
 
 ## The ONNX tests
 
@@ -133,9 +152,6 @@ job is talking to Windows. Reaching 100% needs one of:
 2. **Loopback tests on a machine with a virtual cable** — CI runners have no
    audio devices at all, so these could only run locally or on a self-hosted
    runner.
-3. **Exercising the real model.** `dsp/tract.rs` needs
-   `models/dfn3_ours.tar.gz`, which is in the repo — this one is only waiting
-   on someone writing it.
 
 The honest target is "everything that can be tested without hardware is
 tested", and the ratchet is how that gets enforced.
