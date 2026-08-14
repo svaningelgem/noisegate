@@ -20,6 +20,17 @@ rnnoise = ["dep:nnnoiseless"]
 # raw-audio noise-suppression ONNX file (e.g. DeepFilterNet3 exports from
 # Hugging Face). Adds the onnxruntime DLL as a runtime dependency.
 onnx = ["dep:ort"]
+# DeepFilterNet3 via upstream's tract runner, loading a `*_onnx.tar.gz` we
+# export ourselves with scripts/export_dfn3.py. No onnxruntime.dll, and no
+# model file we cannot regenerate.
+tract = [
+  "dep:deep_filter",
+  "dep:ndarray",
+  "dep:tract-core",
+  "dep:tract-onnx",
+  "dep:tract-pulse",
+  "dep:tract-hir",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -39,3 +50,27 @@ realfft = "3"
 # how "rc.4" ended up resolving to an ort-sys that ort itself can't compile
 # against. Bump this deliberately, not by accident.
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["load-dynamic"] }
+
+# Upstream DeepFilterNet's own runner. Its `tract` feature brings tract-pulse,
+# which pulsifies the exported graphs and threads their GRU and convolution
+# state across frames. That state is the whole problem with real-time use:
+# these graphs expose no hidden state, so running them a frame at a time under
+# ONNX Runtime resets the model's memory every hop and costs ~6 dB of the near
+# voice. Measured, not assumed — see docs/model-pipeline.md.
+#
+# Using upstream's runner rather than reimplementing it also means the model we
+# ship can be one we exported ourselves from the published checkpoint, with no
+# third-party repackaging anywhere in the chain. MIT/Apache-2.0.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d", optional = true, default-features = false, features = ["tract"] }
+ndarray = { version = "0.15", optional = true }
+
+# Pinned, and not because we call tract ourselves — we don't. libDF asks for
+# `tract-core = "^0.21.4"` and still uses ndarray 0.15, but tract moved to
+# ndarray 0.16 somewhere in the 0.21.x line. Take cargo's newest match and
+# upstream's own tract.rs stops compiling, because its `Axis` and tract's
+# become two unrelated types. These pins hold tract on the ndarray-0.15 side of
+# that split.
+tract-core = { version = "=0.21.5", optional = true }
+tract-onnx = { version = "=0.21.5", optional = true }
+tract-pulse = { version = "=0.21.5", optional = true }
+tract-hir = { version = "=0.21.5", optional = true }

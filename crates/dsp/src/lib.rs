@@ -6,7 +6,11 @@
 //! feature swaps in any ONNX-exported denoise model (e.g. DeepFilterNet3
 //! from Hugging Face) for higher quality at the cost of a runtime DLL.
 
-#![forbid(unsafe_code)]
+// `deny` rather than `forbid`, so that exactly one exception can exist and be
+// argued for in place: the `Send` impl in `tract.rs`. Everything else in this
+// crate is still rejected at compile time, and any new `unsafe` needs an
+// explicit `#[allow]` that shows up in review.
+#![deny(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -96,11 +100,11 @@ impl DenoiserHost {
 pub mod dfn_frontend;
 
 #[cfg(feature = "onnx")]
-pub mod dfn3;
-#[cfg(feature = "onnx")]
 mod onnx;
 #[cfg(feature = "rnnoise")]
 mod rnnoise;
+#[cfg(feature = "tract")]
+mod tract;
 
 #[cfg(feature = "onnx")]
 pub use onnx::OnnxDenoiser;
@@ -114,14 +118,15 @@ pub fn build_denoiser(
     attenuation_db: f32,
 ) -> Result<Box<dyn Denoiser>> {
     if let Some(path) = model_path {
+        // A .tar.gz is upstream's three-graph export, which we build ourselves
+        // and which streams correctly because tract threads the model's state
+        // across frames. Preferred over everything below.
+        #[cfg(feature = "tract")]
+        if path.extension().is_some_and(|e| e == "gz") {
+            return Ok(Box::new(tract::TractDenoiser::load(path, attenuation_db)?));
+        }
         #[cfg(feature = "onnx")]
         {
-            // A directory means upstream's three-graph export, which we can
-            // rebuild ourselves from the published checkpoint; a file means the
-            // single-file streaming graph. See docs/model-pipeline.md.
-            if path.is_dir() {
-                return Ok(Box::new(dfn3::Dfn3Denoiser::load(path)?));
-            }
             let mut d = OnnxDenoiser::load(path)?;
             // The config caps how much the model may suppress. RNNoise has no
             // equivalent knob, so this only applies to the ONNX path.
