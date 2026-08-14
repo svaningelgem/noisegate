@@ -25,4 +25,4 @@
 # Transient download from scripts/export_dfn3.py. It is upstream's
 # clean_freesound_33711.wav, which is CC BY-NC and must not be
 # redistributed from a repository licensed MIT/Apache-2.0.
-scripts/.test_sample.wav
+.test_sample.wav
