@@ -1,0 +1,13 @@
+# The model is an exported artefact, not source. Git must not rewrite anything
+# inside it: config.ini and version.txt are text, so a CRLF conversion on
+# checkout would change the bytes the app loads and packs, and would differ
+# between a Windows clone and a Linux one for no reason.
+models/dfn3/** -text
+
+# Audio and video are binary. Marked explicitly so no heuristic ever decides
+# otherwise and corrupts one with a line-ending pass.
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.onnx binary
+*.tar.gz binary
