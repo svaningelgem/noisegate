@@ -179,6 +179,54 @@ mod tests {
         round_trip(w!("RoomMute-selftest-roundtrip"));
     }
 
+    /// The round trip only asks whether the value exists. What Windows will
+    /// actually run is the string, and that string is encoded to UTF-16 bytes
+    /// by hand — so encode it, read it back through the registry, and require
+    /// the command to survive intact.
+    ///
+    /// The path carries an accent and an emoji on purpose: the emoji is
+    /// outside the BMP and therefore a surrogate pair, which is where a
+    /// hand-rolled UTF-16 encoder goes wrong if it is going to.
+    #[test]
+    fn the_value_written_is_the_command_windows_will_run() {
+        let name = w!("RoomMute-selftest-encoding");
+        let exe = Path::new("C:\\nowhere\\Ro\u{00f4}mMute \u{1f3a4}\\roommute.exe");
+
+        set_entry(name, exe, true).expect("enable");
+        let written = read_entry(name);
+        set_entry(name, exe, false).expect("disable");
+
+        assert_eq!(
+            written.as_deref(),
+            Some(command_string(exe).as_str()),
+            "the Run value has to be the quoted command, byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_name_that_was_never_written_reads_as_nothing() {
+        assert_eq!(read_entry(w!("RoomMute-selftest-absent")), None);
+    }
+
+    /// Read-only on purpose. `set(true)` writes `current_exe()`, which under
+    /// `cargo test` is a temporary binary in target/debug/deps — so the public
+    /// pair can only be half-tested, and this is the half that is safe.
+    #[test]
+    fn is_enabled_agrees_with_what_is_actually_in_the_key() {
+        assert_eq!(
+            is_enabled(),
+            read_entry(VALUE_NAME).is_some(),
+            "is_enabled() has to mean 'the value is present', however this \
+             machine happens to be configured"
+        );
+    }
+
+    #[test]
+    fn the_command_points_at_a_real_file() {
+        let exe = exe_path().expect("the running executable must be locatable");
+        assert!(exe.is_file(), "{} is not a file", exe.display());
+    }
+
     /// The round trip used to call `set(true)`, which writes
     /// `current_exe()` — under `cargo test` that is the test binary in
     /// target/debug/deps. Anyone who had autostart switched on and then ran

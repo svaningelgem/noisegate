@@ -204,4 +204,121 @@ mod tests {
         };
         assert!(f.validate().is_err());
     }
+
+    /// A rejection the user cannot act on is barely better than a crash.
+    #[test]
+    fn a_refusal_says_what_the_device_actually_does() {
+        let pcm = MixFormat {
+            bits_per_sample: 16,
+            block_align: 4,
+            is_float: false,
+            ..float32(2)
+        };
+        let msg = pcm.validate().unwrap_err().to_string();
+        assert!(msg.contains("16"), "name the bit depth found: {msg}");
+        assert!(msg.contains("integer PCM"), "name the sample type: {msg}");
+
+        let lying = MixFormat {
+            block_align: 6,
+            ..float32(2)
+        };
+        let msg = lying.validate().unwrap_err().to_string();
+        assert!(
+            msg.contains('6') && msg.contains('8'),
+            "give both the claimed and the required stride: {msg}"
+        );
+    }
+
+    /// Decoding the engine's header, which is where the pointer arithmetic
+    /// lives. The structs are ordinary `#[repr(C)]` data, so they can be built
+    /// by hand — no audio engine and no device required.
+    #[cfg(windows)]
+    mod headers {
+        use windows::core::GUID;
+        use windows::Win32::Media::Audio::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};
+        use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
+        use windows::Win32::Media::Multimedia::{
+            KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT,
+        };
+
+        use crate::format::read_mix_format;
+
+        const PCM_TAG: u16 = 1;
+        /// KSDATAFORMAT_SUBTYPE_PCM, spelled out because the `windows` crate
+        /// does not re-export it beside the float one.
+        const SUBTYPE_PCM: GUID = GUID::from_u128(0x0000_0001_0000_0010_8000_00aa_0038_9b71);
+
+        fn header(tag: u16, bits: u16, channels: u16, cb_size: u16) -> WAVEFORMATEX {
+            let block = channels * (bits / 8);
+            WAVEFORMATEX {
+                wFormatTag: tag,
+                nChannels: channels,
+                nSamplesPerSec: 48_000,
+                nAvgBytesPerSec: 48_000 * u32::from(block),
+                nBlockAlign: block,
+                wBitsPerSample: bits,
+                cbSize: cb_size,
+            }
+        }
+
+        fn extensible(subformat: windows::core::GUID, cb_size: u16) -> WAVEFORMATEXTENSIBLE {
+            let mut ext = WAVEFORMATEXTENSIBLE::default();
+            ext.Format = header(WAVE_FORMAT_EXTENSIBLE as u16, 32, 2, cb_size);
+            ext.SubFormat = subformat;
+            ext
+        }
+
+        #[test]
+        fn a_plain_float_header_decodes_field_for_field() {
+            let h = header(WAVE_FORMAT_IEEE_FLOAT as u16, 32, 2, 0);
+            let got = unsafe { read_mix_format(&h) };
+            assert!(got.is_float);
+            assert_eq!(got.sample_rate, 48_000);
+            assert_eq!(got.channels, 2);
+            assert_eq!(got.bits_per_sample, 32);
+            assert_eq!(got.block_align, 8);
+            assert!(got.validate().is_ok(), "this is the format we want");
+        }
+
+        #[test]
+        fn integer_pcm_is_not_mistaken_for_float() {
+            let h = header(PCM_TAG, 16, 2, 0);
+            let got = unsafe { read_mix_format(&h) };
+            assert!(!got.is_float, "16-bit PCM must not decode as float");
+            assert!(
+                got.validate().is_err(),
+                "reinterpreting this buffer as f32 would read twice the bytes the \
+                 engine allocated"
+            );
+        }
+
+        #[test]
+        fn an_extensible_header_is_read_through_to_its_subformat() {
+            let float = extensible(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 22);
+            assert!(
+                unsafe { read_mix_format(&float.Format) }.is_float,
+                "the float subformat GUID is how real shared-mode devices say float"
+            );
+
+            let pcm = extensible(SUBTYPE_PCM, 22);
+            assert!(
+                !unsafe { read_mix_format(&pcm.Format) }.is_float,
+                "an extensible PCM device is still PCM"
+            );
+        }
+
+        /// `cbSize` is the header's own statement about how many extra bytes
+        /// follow it. Below 22 there is no subformat GUID to read, and reading
+        /// one anyway walks off the end of the engine's allocation. The tag
+        /// alone must not be enough to go looking.
+        #[test]
+        fn an_extensible_header_without_a_declared_tail_is_not_read_further() {
+            let lying = extensible(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 0);
+            assert!(
+                !unsafe { read_mix_format(&lying.Format) }.is_float,
+                "cbSize said there is no subformat, so none may be read — even \
+                 though the bytes happen to be there in this test"
+            );
+        }
+    }
 }

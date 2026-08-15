@@ -18,8 +18,8 @@ cargo install cargo-llvm-cov
 
 ## The coverage ratchet
 
-CI enforces a **minimum** line coverage, currently **70%**, just under the
-71.2% actually reached. A pull request may raise that number; it must
+CI enforces a **minimum** line coverage, currently **71%**, just under the
+72.5% actually reached. A pull request may raise that number; it must
 never lower it. When coverage improves, bump `--fail-under-lines` in
 `.github/workflows/ci.yml` **and** `.github/workflows/release.yml` in the same
 PR — a tag must never publish something a pull request would have failed.
@@ -32,18 +32,18 @@ PR — a tag must never publish something a pull request would have failed.
 | `log_format.rs` | 96% | the formatter runs against a buffer instead of a terminal |
 | `devices.rs` | 94% | pure logic — device matching, priority, cable detection |
 | `dsp/dfn_frontend.rs` | 92% | pure DSP, checked against `df.enhance.df_features()` |
+| `autostart.rs` | 90% | writes a scratch value name, reads it back, and checks the app's own is untouched |
 | `event.rs` | 91% | the RAII handle wrapper, round-tripped |
 | `config.rs` | 90% | load/save take a path, so tests never touch `%APPDATA%` |
 | `pipeline.rs` | 83% | driven through a fake audio backend, including device selection |
 | `error.rs` | 82% | HRESULT translation is a pure function |
 | `offline.rs` | 81% | `--denoise` runs end to end on a generated WAV |
 | `banner.rs` | 81% | the art has to fit 80 columns |
+| `format.rs` | 89% | validation, plus decoding a hand-built `WAVEFORMATEX` |
 | `dsp/lib.rs` | 78% | backend selection |
 | `mmcss.rs` | 77% | asks the OS scheduler for Pro Audio priority |
 | `firstrun.rs` | 75% | the dialog *text* is testable; the message box is not |
 | `dsp/onnx.rs` | 75% | runs a real session against `testdata/streaming_contract.onnx` |
-| `format.rs` | 69% | mix-format validation is pure; the rejection paths are thin |
-| `autostart.rs` | 68% | round-trips a scratch registry key, never the real one |
 | `wasapi_capture.rs` | 67% | the pump runs against a scripted engine; only the COM setup is left |
 | `wasapi_render.rs` | 66% | same |
 | `tray.rs` | 52% | the watchdog, menu labels and icons; the event loop is not |
