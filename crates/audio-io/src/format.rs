@@ -262,10 +262,11 @@ mod tests {
         }
 
         fn extensible(subformat: windows::core::GUID, cb_size: u16) -> WAVEFORMATEXTENSIBLE {
-            let mut ext = WAVEFORMATEXTENSIBLE::default();
-            ext.Format = header(WAVE_FORMAT_EXTENSIBLE as u16, 32, 2, cb_size);
-            ext.SubFormat = subformat;
-            ext
+            WAVEFORMATEXTENSIBLE {
+                Format: header(WAVE_FORMAT_EXTENSIBLE as u16, 32, 2, cb_size),
+                SubFormat: subformat,
+                ..Default::default()
+            }
         }
 
         #[test]
