@@ -67,7 +67,9 @@ Source: "{#SourceDir}\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 ;
 ; This is the export we build ourselves from the published checkpoint with
 ; scripts/export_dfn3.py, not a prebuilt file of unknown provenance.
-Source: "..\models\dfn3_ours.tar.gz";  DestDir: "{app}"; Flags: ignoreversion
+; The model as ordinary files, so the install directory shows a model
+; rather than a tarball. RoomMute packs them for libDF in memory.
+Source: "..\models\dfn3\*";           DestDir: "{app}\model"; Flags: ignoreversion
 Source: "..\models\NOTICE.md";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md";                DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\LICENSE-MIT";              DestDir: "{app}"; Flags: ignoreversion

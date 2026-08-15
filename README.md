@@ -63,7 +63,7 @@ cd roommute
 cargo build --release
 ```
 
-The default build includes everything: RNNoise, DeepFilterNet3 via tract, and the ONNX loader. The model is in `models/`, so a fresh clone gives you a working binary.
+The default build includes everything: RNNoise, DeepFilterNet3 via tract, and the ONNX loader. The model is in `models/dfn3/` as ordinary files — three ONNX graphs and a readable `config.ini` — so a fresh clone gives you a working binary.
 
 Requires the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`).
 </details>

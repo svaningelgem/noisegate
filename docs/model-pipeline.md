@@ -5,10 +5,17 @@ that exists on only one PC.
 
 ## What RoomMute runs
 
-`models/dfn3_ours.tar.gz` — upstream DeepFilterNet3's own three-graph export
-(`enc`, `erb_dec`, `df_dec`) plus its config, loaded by
+`models/dfn3/` — upstream DeepFilterNet3's own three-graph export (`enc`,
+`erb_dec`, `df_dec`) plus its config, as five ordinary files, loaded by
 [`crates/dsp/src/tract.rs`](../crates/dsp/src/tract.rs) through libDF's tract
-runner. The installer puts it beside the executable and the app finds it there.
+runner. The installer copies them to `model\` beside the executable and the app
+finds them there.
+
+libDF accepts only a `.tar.gz` — `DfParams` exposes `new(path)` and
+`from_bytes(buf)` and nothing else — so RoomMute packs the directory in memory
+on load. That is libDF's interface, not something this program needs on disk,
+and it is not a reason for an install directory to contain a tarball. Passing
+a `.tar.gz` still works, since that is the form upstream distributes.
 
 One command rebuilds it, from the published checkpoint, on any machine:
 

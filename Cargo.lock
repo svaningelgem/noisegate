@@ -2497,10 +2497,12 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "deep_filter",
+ "flate2",
  "ndarray 0.15.6",
  "nnnoiseless",
  "ort",
  "realfft",
+ "tar",
  "thiserror 1.0.69",
  "tracing",
  "tract-core",

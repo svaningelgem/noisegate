@@ -26,3 +26,7 @@
 # clean_freesound_33711.wav, which is CC BY-NC and must not be
 # redistributed from a repository licensed MIT/Apache-2.0.
 .test_sample.wav
+
+# Built by scripts/export_dfn3.py on the way to models/dfn3/. The loose
+# files are what is committed and what ships.
+models/*.tar.gz

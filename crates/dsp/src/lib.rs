@@ -118,11 +118,15 @@ pub fn build_denoiser(
     attenuation_db: f32,
 ) -> Result<Box<dyn Denoiser>> {
     if let Some(path) = model_path {
-        // A .tar.gz is upstream's three-graph export, which we build ourselves
-        // and which streams correctly because tract threads the model's state
+        // DeepFilterNet3's three-graph export, which we build ourselves and
+        // which streams correctly because tract threads the model's state
         // across frames. Preferred over everything below.
+        //
+        // A directory is the normal case — that is how the installer lays the
+        // model down, and it has no extension to match on. A `.tar.gz` is the
+        // same model in the form upstream distributes it.
         #[cfg(feature = "tract")]
-        if path.extension().is_some_and(|e| e == "gz") {
+        if path.is_dir() || path.extension().is_some_and(|e| e == "gz") {
             return Ok(Box::new(tract::TractDenoiser::load(path, attenuation_db)?));
         }
         #[cfg(feature = "onnx")]
@@ -151,4 +155,25 @@ pub fn build_denoiser(
     Err(DspError::Load(
         "no denoiser backend compiled in (enable feature `rnnoise` or `onnx`)".into(),
     ))
+}
+
+#[cfg(all(test, feature = "tract"))]
+mod dispatch_tests {
+    use std::path::PathBuf;
+
+    use super::build_denoiser;
+
+    fn shipped_model() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/dfn3")
+    }
+
+    /// The installer lays the model down as loose files in a directory, which
+    /// has no extension to dispatch on. Routing that to the ONNX loader would
+    /// fail at load, or worse, succeed against some other file and quietly run
+    /// the wrong backend.
+    #[test]
+    fn a_model_directory_is_routed_to_tract() {
+        let d = build_denoiser(Some(&shipped_model()), 0.0).expect("a model directory must load");
+        assert_eq!(d.name(), "DeepFilterNet3 (tract)");
+    }
 }

@@ -51,8 +51,7 @@ PR — a tag must never publish something a pull request would have failed.
 | `console.rs` | 39% | the redirection-preserving branch runs; `AttachConsole` needs a parent console |
 | `dsp/tract.rs` | 87% | loads the real bundled model and runs audio through it |
 
-`tract.rs` is tested against `models/dfn3_ours.tar.gz` itself rather than a
-stand-in, because the property worth guarding cannot be faked: DeepFilterNet3
+`tract.rs` is tested against `models/dfn3/` itself rather than a stand-in, because the property worth guarding cannot be faked: DeepFilterNet3
 carries GRU and convolution state that upstream's export does not expose as
 graph inputs, so a runtime that cannot stream resets the model's memory every
 10 ms. That still produces plausible audio while stripping ~6 dB from the near

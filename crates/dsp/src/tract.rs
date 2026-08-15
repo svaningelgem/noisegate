@@ -72,13 +72,64 @@ pub struct TractDenoiser {
 #[allow(unsafe_code)]
 unsafe impl Send for TractDenoiser {}
 
+/// The files libDF looks for, and the order they go into the archive.
+/// `version.txt` is optional — it only feeds a log line.
+const GRAPHS: [&str; 4] = ["enc.onnx", "erb_dec.onnx", "df_dec.onnx", "config.ini"];
+
+/// Build the `.tar.gz` libDF wants, in memory, from a directory of ordinary
+/// files.
+///
+/// `DfParams` exposes only `new(tar_file)` and `from_bytes(tar_buf)`, and its
+/// fields are private, so an archive is the only way in. That is libDF's
+/// interface — it is not something this program needs, and it is not a reason
+/// for a user who opens the install directory to find a tarball instead of a
+/// model. So the archive exists for microseconds and never touches disk.
+///
+/// Stored, not deflated: these are ONNX weights, which gzip shrinks by about
+/// 7%, and the bytes are going straight back out again. `Compression::none()`
+/// still emits a valid gzip stream, which is all `GzDecoder` needs.
+fn pack_dir(dir: &Path) -> Result<Vec<u8>> {
+    let missing = |name: &str, e: std::io::Error| {
+        DspError::Load(format!("{}: reading {name}: {e}", dir.display()))
+    };
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+    let mut tar = tar::Builder::new(encoder);
+
+    for name in GRAPHS.iter().copied().chain(std::iter::once("version.txt")) {
+        let path = dir.join(name);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            // Only version.txt may be absent.
+            Err(_) if name == "version.txt" => continue,
+            Err(e) => return Err(missing(name, e)),
+        };
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        // Fixed, so the same directory always packs to the same bytes. The
+        // default is the wall clock, which would make every build differ.
+        header.set_mtime(0);
+        header.set_cksum();
+        tar.append_data(&mut header, name, bytes.as_slice())
+            .map_err(|e| DspError::Load(format!("packing {name}: {e}")))?;
+    }
+
+    tar.into_inner()
+        .and_then(|e| e.finish())
+        .map_err(|e| DspError::Load(format!("packing {}: {e}", dir.display())))
+}
+
 impl TractDenoiser {
-    /// Load from a `DeepFilterNet3_onnx.tar.gz` as produced by
-    /// `scripts/export_dfn3.py`.
-    pub fn load(tar_gz: impl AsRef<Path>, attenuation_db: f32) -> Result<Self> {
-        let path = tar_gz.as_ref();
-        let params = DfParams::new(path.to_path_buf())
-            .map_err(|e| DspError::Load(format!("loading {}: {e:#}", path.display())))?;
+    /// Load the model from a directory of loose files — what the installer
+    /// lays down — or from a `.tar.gz` as upstream distributes it.
+    pub fn load(model: impl AsRef<Path>, attenuation_db: f32) -> Result<Self> {
+        let path = model.as_ref();
+        let params = if path.is_dir() {
+            DfParams::from_bytes(&pack_dir(path)?)
+        } else {
+            DfParams::new(path.to_path_buf())
+        }
+        .map_err(|e| DspError::Load(format!("loading {}: {e:#}", path.display())))?;
 
         // 0 dB would mean "suppress nothing", which is not what the config
         // means by 0 — there it means "no limit". Upstream spells that as a
@@ -149,7 +200,50 @@ mod tests {
     /// The model the installer ships, so these run anywhere the repo is
     /// checked out — no download, no fixture to regenerate.
     fn shipped_model() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/dfn3_ours.tar.gz")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/dfn3")
+    }
+
+    /// The app's own directory holds the model as ordinary files, because a
+    /// user looking at what they installed should see a model, not a tarball.
+    /// libDF only accepts a `.tar.gz`, so one is built in memory — that is
+    /// libDF's interface, not something the product needs on disk.
+    #[test]
+    fn a_directory_of_loose_files_loads() {
+        let d = TractDenoiser::load(shipped_model(), 0.0)
+            .expect("the shipped model directory must load");
+        assert_eq!(d.name(), "DeepFilterNet3 (tract)");
+    }
+
+    /// `--model something.tar.gz` still has to work: it is what upstream
+    /// distributes and what earlier installs have.
+    #[test]
+    fn an_archive_still_loads_too() {
+        let dir = std::env::temp_dir().join(format!("roommute-tgz-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("packed.tar.gz");
+        std::fs::write(&archive, pack_dir(&shipped_model()).expect("pack")).unwrap();
+
+        let d = TractDenoiser::load(&archive, 0.0).expect("a packed archive must load");
+        assert_eq!(d.name(), "DeepFilterNet3 (tract)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_missing_a_graph_says_which_one() {
+        let dir = std::env::temp_dir().join(format!("roommute-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("enc.onnx"), b"stand-in").unwrap();
+
+        let Err(err) = TractDenoiser::load(&dir, 0.0) else {
+            panic!("a directory without every graph must not load");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("erb_dec.onnx"),
+            "name the file that is missing, got: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn noise(seed: &mut u32) -> [f32; FRAME_SAMPLES] {

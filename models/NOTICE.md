@@ -13,17 +13,23 @@ Two files, both **DeepFilterNet3** by Hendrik Schröter and contributors.
 RoomMute ships the model so the app works on first run. Nothing is downloaded
 and nothing is phoned home — the app has no network code at all.
 
-## `dfn3_ours.tar.gz` — what the app loads
+## `dfn3/` — what the app loads
 
 Upstream's own three-graph export (`enc`, `erb_dec`, `df_dec`) with its config,
-built from the published checkpoint by:
+as ordinary files, built from the published checkpoint by:
 
 ```bash
 uv run scripts/export_dfn3.py
 ```
 
-Every artefact in it can be regenerated on any machine in about a minute of CPU
-work. Two of the three graphs come out byte-identical to upstream's release.
+Every artefact can be regenerated on any machine in about a minute of CPU work.
+Two of the three graphs come out byte-identical to upstream's release.
+
+They stay loose rather than being packed into the `.tar.gz` upstream ships,
+because a user who opens the install directory should find a model, not a
+tarball. libDF only accepts an archive, so RoomMute builds one in memory at
+load time — stored, not deflated, since these are ONNX weights that gzip
+shrinks by about 7% and the bytes go straight back out again.
 
 ## `model.onnx` — kept for older installs
 

@@ -25,6 +25,8 @@ onnx = ["dep:ort"]
 # model file we cannot regenerate.
 tract = [
   "dep:deep_filter",
+  "dep:tar",
+  "dep:flate2",
   "dep:ndarray",
   "dep:tract-core",
   "dep:tract-onnx",
@@ -63,6 +65,12 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 # third-party repackaging anywhere in the chain. MIT/Apache-2.0.
 deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d", optional = true, default-features = false, features = ["tract"] }
 ndarray = { version = "0.15", optional = true }
+
+# libDF only accepts its model as a .tar.gz, so we build one in memory from the
+# loose files the installer lays down. Both already come in with deep_filter,
+# which reads the same format — this only asks for them by name.
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
 
 # Pinned, and not because we call tract ourselves — we don't. libDF asks for
 # `tract-core = "^0.21.4"` and still uses ndarray 0.15, but tract moved to

@@ -80,7 +80,8 @@ fn missing_text(expected: &std::path::Path) -> String {
     format!(
         "The high-quality model isn't installed yet.\n\n\
          Download the DeepFilterNet3 ONNX export from:\n\n    {}\n\n\
-         and save it as:\n\n    {}\n\n\
+         and unpack it into this folder, so enc.onnx, erb_dec.onnx, df_dec.onnx \
+         and config.ini sit inside it:\n\n    {}\n\n\
          RoomMute will use it the next time you pick it from the Denoiser menu. \
          Until then it stays on the built-in noise removal.",
         MODEL_SOURCE_URL,

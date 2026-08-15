@@ -628,10 +628,12 @@ impl App {
             let available = self.cfg.read().unwrap().available_model();
             if available.is_none() {
                 // Nothing to load yet — say where to put it and stay put.
+                // The directory, because that is the layout the installer
+                // lays down and the one to recreate by hand.
                 let expected = std::env::current_exe()
                     .ok()
-                    .and_then(|p| p.parent().map(|d| d.join("dfn3_ours.tar.gz")))
-                    .unwrap_or_else(|| std::path::PathBuf::from("dfn3_ours.tar.gz"));
+                    .and_then(|p| p.parent().map(|d| d.join("model")))
+                    .unwrap_or_else(|| std::path::PathBuf::from("model"));
                 crate::firstrun::model_missing(&expected);
                 if let Some(items) = &self.items {
                     for d in &items.denoisers {

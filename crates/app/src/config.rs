@@ -163,6 +163,16 @@ impl Config {
                 "configured model is missing; looking beside the executable"
             );
         }
+        // `model/` first: the installer lays the graphs down as ordinary files
+        // there, so anyone opening the install directory can see what the app
+        // runs. Matched on a graph inside it rather than the folder alone, so
+        // an unrelated directory called `model` is not mistaken for one.
+        let loose = dir.join("model");
+        if loose.join("enc.onnx").exists() {
+            return Some(loose);
+        }
+        // Archives stay supported: upstream distributes the `.tar.gz`, and
+        // `model.onnx` is what installs from before the switch have.
         ["dfn3_ours.tar.gz", "model.onnx"]
             .iter()
             .map(|name| dir.join(name))
@@ -334,6 +344,32 @@ mod tests {
              what is shipped, not leave the user with no model"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the installer actually lays down.
+    #[test]
+    fn a_model_directory_beside_the_exe_wins() {
+        let dir = scratch("loose");
+        std::fs::create_dir_all(dir.join("model")).unwrap();
+        std::fs::write(dir.join("model/enc.onnx"), b"graph").unwrap();
+        std::fs::write(dir.join("dfn3_ours.tar.gz"), b"archive").unwrap();
+
+        assert_eq!(
+            Config::default().model_in(&dir),
+            Some(dir.join("model")),
+            "loose files are what we ship; the archive is only for compatibility"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare `model` folder with nothing in it must not be mistaken for one.
+    #[test]
+    fn an_empty_model_folder_is_not_a_model() {
+        let dir = scratch("hollow");
+        std::fs::create_dir_all(dir.join("model")).unwrap();
+
+        assert_eq!(Config::default().model_in(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
