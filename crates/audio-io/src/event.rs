@@ -93,19 +93,28 @@ mod tests {
             n
         };
 
+        // The counter is process-wide, and the other tests in this binary run
+        // in parallel and open handles of their own between the two samples.
+        // So the guard cannot be a tight bound — it has to be a wide gap: a
+        // real leak adds one handle per event, which is EVENTS, while the
+        // noise from siblings is a handful. TOLERANCE sits an order of
+        // magnitude below the leak it must catch and well above that noise.
+        const EVENTS: u32 = 500;
+        const TOLERANCE: u32 = 50;
+
         // Warm up so one-off allocations do not show as growth.
         for _ in 0..10 {
             drop(Event::new().unwrap());
         }
         let before = count();
-        for _ in 0..200 {
+        for _ in 0..EVENTS {
             drop(Event::new().unwrap());
         }
         let after = count();
 
         assert!(
-            after <= before + 5,
-            "handle count went {before} -> {after} over 200 events; they are leaking"
+            after <= before + TOLERANCE,
+            "handle count went {before} -> {after} over {EVENTS} events; they are leaking"
         );
     }
 }

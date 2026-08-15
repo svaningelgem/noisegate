@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -138,6 +138,17 @@ impl Config {
     /// installs have beside them, and pointing `model_path` at any single-file
     /// streaming export still works.
     pub fn available_model(&self) -> Option<PathBuf> {
+        let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        self.model_in(&dir)
+    }
+
+    /// The directory is a parameter for the same reason `load`/`save` take a
+    /// path: otherwise every test shares one real location. These tests share
+    /// the *test binary's* directory, and one of them has to create a model
+    /// there while another asserts none is present — so they raced, and CI
+    /// failed on whichever lost. A caller-supplied directory removes the
+    /// shared state rather than papering over it with a lock.
+    fn model_in(&self, dir: &Path) -> Option<PathBuf> {
         if !self.model_path.is_empty() {
             let configured = PathBuf::from(&self.model_path);
             if configured.exists() {
@@ -152,7 +163,6 @@ impl Config {
                 "configured model is missing; looking beside the executable"
             );
         }
-        let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
         ["dfn3_ours.tar.gz", "model.onnx"]
             .iter()
             .map(|name| dir.join(name))
@@ -182,6 +192,16 @@ fn base_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory of this test's own. Tests run in parallel, so anything
+    /// shared between them — including the directory the test binary sits in —
+    /// is a race waiting to be blamed on something else.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("roommute-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn preferring_a_microphone_moves_it_to_the_front() {
@@ -299,13 +319,8 @@ mod tests {
     /// at all — with a perfectly good model sitting beside the executable.
     #[test]
     fn a_stale_model_path_falls_back_to_the_bundled_model() {
-        let dir = std::env::temp_dir().join(format!("roommute-stale-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let beside = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("dfn3_ours.tar.gz");
+        let dir = scratch("stale");
+        let beside = dir.join("dfn3_ours.tar.gz");
         std::fs::write(&beside, b"stand-in for the bundled model").unwrap();
 
         let c = Config {
@@ -313,13 +328,47 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            c.available_model(),
+            c.model_in(&dir),
             Some(beside.clone()),
             "a configured path that no longer exists should fall through to \
              what is shipped, not leave the user with no model"
         );
 
-        let _ = std::fs::remove_file(&beside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The export we build ourselves wins over a single-file `model.onnx` left
+    /// behind by an older install.
+    #[test]
+    fn the_bundled_export_is_preferred_over_a_legacy_model() {
+        let dir = scratch("prefer");
+        std::fs::write(dir.join("model.onnx"), b"older install").unwrap();
+        std::fs::write(dir.join("dfn3_ours.tar.gz"), b"what we ship").unwrap();
+
+        assert_eq!(
+            Config::default().model_in(&dir),
+            Some(dir.join("dfn3_ours.tar.gz"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_legacy_model_is_still_found_when_it_is_all_there_is() {
+        let dir = scratch("legacy");
+        std::fs::write(dir.join("model.onnx"), b"older install").unwrap();
+
+        assert_eq!(
+            Config::default().model_in(&dir),
+            Some(dir.join("model.onnx")),
+            "installs from before the switch must keep working"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_directory_offers_no_model() {
+        let dir = scratch("empty");
+        assert_eq!(Config::default().model_in(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -327,8 +376,7 @@ mod tests {
     /// really there — a stale path must fall back to RNNoise, not fail.
     #[test]
     fn a_model_is_only_offered_when_the_file_exists() {
-        let dir = std::env::temp_dir().join(format!("roommute-model-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("model");
         let model = dir.join("dfn3.onnx");
         std::fs::write(&model, b"not really a model, but it exists").unwrap();
 
@@ -336,7 +384,7 @@ mod tests {
             model_path: model.to_string_lossy().into_owned(),
             ..Config::default()
         };
-        assert_eq!(c.available_model(), Some(model.clone()));
+        assert_eq!(c.model_in(&dir), Some(model.clone()));
         assert_eq!(
             c.active_model(),
             Some(model.clone()),
@@ -344,7 +392,10 @@ mod tests {
         );
 
         std::fs::remove_file(&model).unwrap();
-        assert!(c.available_model().is_none(), "stale path offers nothing");
+        assert!(
+            c.model_in(&dir).is_none(),
+            "a stale path with nothing beside it offers nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
