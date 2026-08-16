@@ -229,6 +229,8 @@ cargo clippy --all-targets --all-features
 cargo test --all-features
 ```
 
+[`docs/signing.md`](docs/signing.md) covers release signing, and why it does not make the SmartScreen warning go away.
+
 [`docs/testing.md`](docs/testing.md) explains the ratchet — a floor that may be raised but never lowered — and is honest about which parts cannot be covered without hardware, and about two fixes that have no test at all and why.
 
 Tests are written **test-first**: write it, watch it fail for the right reason, then fix. A regression test that has never been seen to fail is not a regression test.

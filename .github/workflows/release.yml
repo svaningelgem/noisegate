@@ -87,6 +87,63 @@ jobs:
       - name: Build
         run: cargo build --release --all-features
 
+      # ---------------------------------------------------------------
+      # Release signing, commented out until SignPath Foundation approves the
+      # application — their review is manual and may not be granted. Kept
+      # rather than deleted so turning it on is: delete the "# " prefixes,
+      # restore the job-level env below, and add four repository settings.
+      #
+      #   env:
+      #     SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      #
+      # docs/signing.md has the settings and the two ordering rules that are
+      # easy to get wrong.
+      # ---------------------------------------------------------------
+      # # Signing, if this repository has been enrolled. Without the secret every
+      # # step below is skipped and the release goes out unsigned, exactly as it
+      # # did before — a missing credential must not fail a release.
+      # #
+      # # The executable is signed *before* the installer is built, because the
+      # # installer embeds it and Windows judges the extracted binary on its own
+      # # signature. Signing only the installer leaves the thing users actually
+      # # run unsigned. Checksums are taken after all of this, since a signature
+      # # changes the bytes.
+      # - name: Upload the executable for signing
+      #   id: upload-exe
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: unsigned-executable
+      #     path: target/release/roommute.exe
+
+      # - name: Sign the executable
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      #     project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      #     signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+      #     artifact-configuration-slug: executable
+      #     github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: signed/executable
+
+      # - name: Put the signed executable back
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   shell: bash
+      #   run: |
+      #     cp signed/executable/roommute.exe target/release/roommute.exe
+      #     # A signature that did not attach is worse than none: the release
+      #     # would claim to be signed and would not be. Compared as a string
+      #     # rather than through PowerShell's exit code, which inverts booleans
+      #     # ($true leaves 1, which shells read as failure).
+      #     exe="target/release/roommute.exe"
+      #     status=$(powershell -NoProfile -Command "(Get-AuthenticodeSignature '$exe').Status")
+      #     echo "roommute.exe signature: $status"
+      #     [ "$status" = "Valid" ] || { echo "::error::roommute.exe is not validly signed"; exit 1; }
+
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -94,6 +151,38 @@ jobs:
         shell: cmd
         run: |
           "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\roommute.iss
+
+      # - name: Upload the installer for signing
+      #   id: upload-setup
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: unsigned-installer
+      #     path: dist/RoomMute-${{ steps.version.outputs.version }}-setup.exe
+
+      # - name: Sign the installer
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      #     project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      #     signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+      #     artifact-configuration-slug: installer
+      #     github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: signed/installer
+
+      # - name: Put the signed installer back
+      #   if: env.SIGNING_ENABLED == 'true'
+      #   shell: bash
+      #   run: |
+      #     setup="dist/RoomMute-${{ steps.version.outputs.version }}-setup.exe"
+      #     cp "signed/installer/RoomMute-${{ steps.version.outputs.version }}-setup.exe" "$setup"
+      #     status=$(powershell -NoProfile -Command "(Get-AuthenticodeSignature '$setup').Status")
+      #     echo "installer signature: $status"
+      #     [ "$status" = "Valid" ] || { echo "::error::the installer is not validly signed"; exit 1; }
+
 
       - name: Package the portable build
         shell: bash
@@ -141,5 +230,7 @@ jobs:
 
             Verify your download against `SHA256SUMS.txt`.
 
-            > These binaries are not code-signed, so SmartScreen will warn on first
-            > run. Choose "More info" then "Run anyway", or verify the checksum above.
+            > SmartScreen may warn on first run. Signing does not remove that on
+            > its own — Windows builds trust per file as downloads accumulate, and
+            > a brand-new release has none. Choose "More info" then "Run anyway",
+            > or verify the checksum above.
