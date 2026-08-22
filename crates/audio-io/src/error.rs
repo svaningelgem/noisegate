@@ -62,6 +62,15 @@ fn explain(code: u32) -> Option<&'static str> {
              'Let desktop apps access your microphone' is on"
         }
         0x8007_0490 => "no such device — it may have been unplugged",
+        // ERROR_MOD_NOT_FOUND. Windows says "the specified module could not be
+        // found", which reads as a missing RoomMute DLL and sends people
+        // reinstalling this app. It is the endpoint's own effects chain: an
+        // audio enhancement (Realtek, Nahimic, Waves, Dolby and friends
+        // register these) whose DLL Windows cannot load. Opening the format
+        // for the device pulls that chain in, which is why it surfaces here.
+        0x8007_007E => {
+            "the device's audio enhancements could not be loaded — turn them off in              Settings, System, Sound, that device, or reinstall its audio driver"
+        }
         _ => return None,
     })
 }
@@ -104,6 +113,29 @@ mod tests {
         assert!(AudioError::Stalled.is_recoverable());
         assert!(!AudioError::VirtualCableMissing.is_recoverable());
         assert!(!AudioError::UnsupportedFormat("16-bit".into()).is_recoverable());
+    }
+
+    #[cfg(windows)]
+    /// ERROR_MOD_NOT_FOUND out of GetMixFormat, reported from a real machine.
+    /// Windows renders it as "The specified module could not be found", which
+    /// sounds like RoomMute is missing a DLL of its own. It is not: the audio
+    /// endpoint has an effects DLL registered that Windows cannot load, and
+    /// the fix is on the device, not in this app.
+    #[test]
+    fn a_missing_audio_effect_dll_says_so_rather_than_blaming_us() {
+        let e = AudioError::wasapi(
+            "GetMixFormat",
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8007_007Eu32 as i32)),
+        );
+        let text = e.to_string();
+        assert!(
+            text.contains("enhancement") || text.contains("effect"),
+            "point at audio enhancements, which is what this code means here: {text}"
+        );
+        assert!(
+            !text.contains("specified module could not be found"),
+            "Windows' own wording reads as a missing RoomMute DLL: {text}"
+        );
     }
 
     #[cfg(windows)]

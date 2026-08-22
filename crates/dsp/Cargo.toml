@@ -11,36 +11,13 @@ description = "Trait-based real-time noise-suppression DSP layer. RNNoise (defau
 keywords = ["noise-suppression", "rnnoise", "speech-enhancement", "real-time", "dsp"]
 categories = ["multimedia::audio", "science"]
 
-[features]
-default = ["rnnoise", "tract", "onnx"]
-# nnnoiseless: pure-Rust port of Xiph's RNNoise. Mature, MIT, ~85 KB model
-# embedded. Ships everywhere Rust does. Quality: good but classical-RNN era.
-rnnoise = ["dep:nnnoiseless"]
-# Optional ONNX Runtime path for high-quality models — point it at any
-# raw-audio noise-suppression ONNX file (e.g. DeepFilterNet3 exports from
-# Hugging Face). Adds the onnxruntime DLL as a runtime dependency.
-onnx = ["dep:ort"]
-# DeepFilterNet3 via upstream's tract runner, loading a `*_onnx.tar.gz` we
-# export ourselves with scripts/export_dfn3.py. No onnxruntime.dll, and no
-# model file we cannot regenerate.
-tract = [
-  "dep:deep_filter",
-  "dep:tar",
-  "dep:flate2",
-  "dep:ndarray",
-  "dep:tract-core",
-  "dep:tract-onnx",
-  "dep:tract-pulse",
-  "dep:tract-hir",
-]
-
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 # Default backend.
-nnnoiseless = { version = "0.5", optional = true }
+nnnoiseless = { version = "0.5" }
 
 # STFT for the DeepFilterNet front-end. realfft is what libDF itself uses, and
 # rustfft underneath it is already in the tree via nnnoiseless.
@@ -51,7 +28,7 @@ realfft = "3"
 # API between themselves — including ort's own dependency on ort-sys, which is
 # how "rc.4" ended up resolving to an ort-sys that ort itself can't compile
 # against. Bump this deliberately, not by accident.
-ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"] }
 
 # Upstream DeepFilterNet's own runner. Its `tract` feature brings tract-pulse,
 # which pulsifies the exported graphs and threads their GRU and convolution
@@ -63,14 +40,14 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 # Using upstream's runner rather than reimplementing it also means the model we
 # ship can be one we exported ourselves from the published checkpoint, with no
 # third-party repackaging anywhere in the chain. MIT/Apache-2.0.
-deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d", optional = true, default-features = false, features = ["tract"] }
-ndarray = { version = "0.15", optional = true }
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d", default-features = false, features = ["tract"] }
+ndarray = { version = "0.15" }
 
 # libDF only accepts its model as a .tar.gz, so we build one in memory from the
 # loose files the installer lays down. Both already come in with deep_filter,
 # which reads the same format — this only asks for them by name.
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1", optional = true }
+tar = { version = "0.4" }
+flate2 = { version = "1" }
 
 # Pinned, and not because we call tract ourselves — we don't. libDF asks for
 # `tract-core = "^0.21.4"` and still uses ndarray 0.15, but tract moved to
@@ -78,7 +55,7 @@ flate2 = { version = "1", optional = true }
 # upstream's own tract.rs stops compiling, because its `Axis` and tract's
 # become two unrelated types. These pins hold tract on the ndarray-0.15 side of
 # that split.
-tract-core = { version = "=0.21.5", optional = true }
-tract-onnx = { version = "=0.21.5", optional = true }
-tract-pulse = { version = "=0.21.5", optional = true }
-tract-hir = { version = "=0.21.5", optional = true }
+tract-core = { version = "=0.21.5" }
+tract-onnx = { version = "=0.21.5" }
+tract-pulse = { version = "=0.21.5" }
+tract-hir = { version = "=0.21.5" }

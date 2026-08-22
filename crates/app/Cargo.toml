@@ -30,13 +30,6 @@ ringbuf.workspace = true
 dirs = "5"
 hound = "3.5"
 
-[features]
-# Optional ONNX backend, forwarded to the dsp crate.
-onnx = ["dsp/onnx"]
-# DeepFilterNet3 via upstream's tract runner, loading a tar.gz we export
-# ourselves. Point --model at models/dfn3_ours.tar.gz.
-tract = ["dsp/tract"]
-
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.19"
 muda = "0.15"

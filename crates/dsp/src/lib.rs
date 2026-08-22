@@ -1,10 +1,9 @@
 //! DSP layer for RoomMute.
 //!
 //! Defines a [`Denoiser`] trait so the pipeline doesn't care which model is
-//! running underneath. The default backend is RNNoise (via `nnnoiseless`)
-//! — published, mature, pure Rust, ships everywhere. The optional `onnx`
-//! feature swaps in any ONNX-exported denoise model (e.g. DeepFilterNet3
-//! from Hugging Face) for higher quality at the cost of a runtime DLL.
+//! running underneath. Three backends are compiled in, always: DeepFilterNet3
+//! through tract, an ONNX Runtime loader for single-file streaming exports,
+//! and RNNoise as the fallback that needs no model at all.
 
 // `deny` rather than `forbid`, so that exactly one exception can exist and be
 // argued for in place: the `Send` impl in `tract.rs`. Everything else in this
@@ -99,20 +98,20 @@ impl DenoiserHost {
 
 pub mod dfn_frontend;
 
-#[cfg(feature = "onnx")]
 mod onnx;
-#[cfg(feature = "rnnoise")]
 mod rnnoise;
-#[cfg(feature = "tract")]
 mod tract;
 
-#[cfg(feature = "onnx")]
 pub use onnx::OnnxDenoiser;
-#[cfg(feature = "rnnoise")]
 pub use rnnoise::RnNoise;
 
-/// Build a denoiser. With a `model_path` (and an `onnx`-enabled build) that
-/// model is loaded; otherwise we use the built-in RNNoise backend.
+/// Build a denoiser: the model at `model_path` if there is one, else the
+/// built-in RNNoise.
+///
+/// Every backend is compiled in, always. They were once cargo features, which
+/// only ever produced binaries that looked fine and quietly could not load a
+/// model — `cargo build --release` left out DeepFilterNet3 because the feature
+/// defaults lived in this crate and not in the app that depends on it.
 pub fn build_denoiser(
     model_path: Option<&std::path::Path>,
     attenuation_db: f32,
@@ -125,39 +124,19 @@ pub fn build_denoiser(
         // A directory is the normal case — that is how the installer lays the
         // model down, and it has no extension to match on. A `.tar.gz` is the
         // same model in the form upstream distributes it.
-        #[cfg(feature = "tract")]
         if path.is_dir() || path.extension().is_some_and(|e| e == "gz") {
             return Ok(Box::new(tract::TractDenoiser::load(path, attenuation_db)?));
         }
-        #[cfg(feature = "onnx")]
-        {
-            let mut d = OnnxDenoiser::load(path)?;
-            // The config caps how much the model may suppress. RNNoise has no
-            // equivalent knob, so this only applies to the ONNX path.
-            d.set_attenuation_db(attenuation_db);
-            return Ok(Box::new(d));
-        }
-        #[cfg(not(feature = "onnx"))]
-        {
-            return Err(DspError::Load(format!(
-                "a model path is set ({}) but this build has no ONNX backend — \
-                 rebuild with `--features onnx`",
-                path.display()
-            )));
-        }
+        let mut d = OnnxDenoiser::load(path)?;
+        // The config caps how much the model may suppress. RNNoise has no
+        // equivalent knob, so this only applies to the ONNX path.
+        d.set_attenuation_db(attenuation_db);
+        return Ok(Box::new(d));
     }
-    let _ = attenuation_db;
-    #[cfg(feature = "rnnoise")]
-    {
-        return Ok(Box::new(RnNoise::new()?));
-    }
-    #[allow(unreachable_code)]
-    Err(DspError::Load(
-        "no denoiser backend compiled in (enable feature `rnnoise` or `onnx`)".into(),
-    ))
+    Ok(Box::new(RnNoise::new()?))
 }
 
-#[cfg(all(test, feature = "tract"))]
+#[cfg(test)]
 mod dispatch_tests {
     use std::path::PathBuf;
 

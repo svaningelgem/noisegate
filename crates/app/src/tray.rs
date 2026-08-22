@@ -420,30 +420,31 @@ fn build_menu(cfg: &Config) -> (Menu, Items) {
         onnx: false,
     });
 
-    match (cfg!(feature = "onnx"), &model) {
-        (true, Some(path)) => {
-            let label = format!(
-                "{} (ONNX)",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
+    match &model {
+        Some(path) => {
+            // Named after the backend that will actually load it, decided the
+            // same way `dsp::build_denoiser` decides. A directory or a .tar.gz
+            // is DeepFilterNet3 through tract; anything else goes to the ONNX
+            // loader. Calling both "(ONNX)" was wrong for the one we ship.
+            let label = if path.is_dir() || path.extension().is_some_and(|e| e == "gz") {
+                "DeepFilterNet3".to_string()
+            } else {
+                format!(
+                    "{} (ONNX)",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )
+            };
             let item = CheckMenuItem::new(label, true, onnx_active, None);
             dsp_menu.append(&item).ok();
             denoisers.push(DenoiserEntry { item, onnx: true });
         }
-        // Explain the absence rather than silently offering one option.
-        (true, None) => {
+        // Explain the absence rather than silently offering one option. There
+        // is no "built without" case any more: every backend is always
+        // compiled in, so a missing model is the only way to get here.
+        None => {
             dsp_menu
                 .append(&MenuItem::new(
                     "(no model found next to the app)",
-                    false,
-                    None,
-                ))
-                .ok();
-        }
-        (false, _) => {
-            dsp_menu
-                .append(&MenuItem::new(
-                    "(built without --features onnx)",
                     false,
                     None,
                 ))
